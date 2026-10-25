@@ -206,7 +206,7 @@
       h3{font-size:15px;margin:0;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shortTitle{display:none}:host([data-minimized="true"]) .fullTitle{display:none}:host([data-minimized="true"]) .shortTitle{display:inline}
       #panelBody{padding:0 15px 15px;overflow:auto;min-height:0}#panelBody[hidden]{display:none}#minimize{margin:0;padding:2px;width:28px;height:28px;flex-shrink:0;font-size:18px;line-height:1}
       p{margin:6px 0;overflow-wrap:anywhere}button{cursor:pointer;padding:7px 11px;margin:4px 4px 4px 0;border:1px solid #bccbdc;border-radius:6px;background:#eef3fa;color:#182335}#start{background:#235de4;color:#fff}label{display:block;margin:4px 0}input{vertical-align:middle}details{margin-top:8px}pre{font:11px/1.5 monospace;max-height:130px;overflow:auto;white-space:pre-wrap}.muted{color:#627086;font-size:12px}
-      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.3</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
+      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.4</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
       <div><button id="start">开始 / 继续</button><button id="pause">暂停</button><button id="stop">停止</button></div>
       <button id="next">下一步 / 下一节</button>
       <label>播放倍速 <select id="playbackRate" aria-label="播放倍速"><option value="0">跟随播放器</option><option value="1">1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">2 倍</option></select></label>
@@ -215,6 +215,7 @@
       <label><input id="foregroundCompat" type="checkbox"> 前台读取兼容（实验）</label><p class="muted">仅兼容播放器的部分可见性／焦点读取；不置顶窗口，学习确认提示仍需手动处理。</p>
       <label><input id="autoNext" type="checkbox" checked> 自动进入后续步骤 / 下一节</label>
       <label><input id="autoQuiz" type="checkbox" checked> 全自动答题并提交（含简答题）</label>
+      <label><input id="randomFallback" type="checkbox" checked> 失败题随机选择（不含简答题）</label>
       <label><input id="muted" type="checkbox"> 静音</label>
       <p class="muted">默认跟随播放器倍速。验证码、弹题和未完成提示需手动处理。</p>
       <details id="quizPanel"><summary>DeepSeek 章节答题</summary><p class="muted">全自动模式会调用 DeepSeek、填写并提交整页练习，产生 API 用量。取消勾选可改用手动生成与填写。</p><button id="settings">密钥与模型设置</button><button id="aiSolve">生成答案与解析</button><button id="aiApply" disabled>填入建议答案</button><pre id="answers" role="status"></pre></details>
@@ -237,7 +238,7 @@
         if (originalContext !== context) return;
         if (response.error) throw new Error(response.error);
         quizResult = response.result;
-        root.querySelector('#answers').textContent = quizResult.answers.map(a => `${a.id} 读取题干：${quizResult.questions.find(q=>q.id===a.id)?.stem || ''}\n答案：${a.answer.join('、')}\n${a.reason}`).join('\n\n');
+        root.querySelector('#answers').textContent = quizResult.answers.map(a => `${a.id} 读取题干：${quizResult.questions.find(q=>q.id===a.id)?.stem || ''}\n${a.source==='random'?'随机兜底（非模型答案）':'答案'}：${a.answer.join('、')}\n${a.reason}`).join('\n\n');
         root.querySelector('#aiApply').disabled = false;
         log(`DeepSeek 已生成 ${quizResult.answers.length} 题建议，请核对后填入`);
       } catch (error) { root.querySelector('#answers').textContent = error.message || '生成失败，请重试'; }
@@ -261,7 +262,7 @@
       render();
       void tick();
     };
-    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "foregroundCompat", "mouseGuard"]) root.querySelector(`#${key}`).onchange = async e => {
+    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) root.querySelector(`#${key}`).onchange = async e => {
       state = await send({ type: "CONTROL", [key]: e.target.checked });
       render();
     };
@@ -273,7 +274,7 @@
       void tick();
     };
     root.querySelector("#copy").onclick = async () => {
-      const clean = { version: "1.7.3",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
+      const clean = { version: "1.7.4",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz,randomFallback:state?.randomFallback, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
         reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note })), logs };
       try { await navigator.clipboard.writeText(JSON.stringify(clean, null, 2)); log("诊断已复制，不含链接参数或 Cookie"); }
       catch { log("复制失败，请手动选取日志文字"); }
@@ -298,9 +299,10 @@
       if(state.running)status.textContent=state.taskCompleted?(state.taskReady?(state.autoNext?'当前任务点已完成，准备进入本节练习':'当前任务点已完成，自动继续已关闭'):'任务点已完成，等待资源或状态稳定'):'当前任务点尚未完成，等待平台完成标记';
       detail.textContent+=` 当前平台任务点：${state.taskDone}/${state.taskTotal} 已完成。${state.taskCompleted&&!XXTNavigation.practiceStep()?'未找到紧接的练习页签，请手动选择。':''}`;
     }
+    if(state.automation?.randomCount)detail.textContent+=` 本次含 ${state.automation.randomCount} 道随机兜底，可能错误。`;
     const notes = (state.reports || []).map(r => r.note).filter(Boolean);
     if (notes.length) detail.textContent += " " + [...new Set(notes)].join("；");
-    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
+    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
     panel.shadowRoot.querySelector("#playbackRate").value = String(state.playbackRate);
   }
   async function tick() {

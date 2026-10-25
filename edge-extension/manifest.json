@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "学习通视频播放助手",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "description": "学习通课程学习页的视频播放、倍速、DeepSeek 选择与简答题填写、章节测验自动提交和下一节切换。",
   "permissions": ["storage", "scripting"],
   "host_permissions": ["https://api.deepseek.com/*", "https://*.chaoxing.com/*"],

@@ -22,6 +22,7 @@ const ready = chrome.storage.session.get("sessions").then(data => {
     sessions.set(Number(key), { ...saved,
       playbackRate: XXTPolicy.validRate(saved.playbackRate) ? saved.playbackRate : 0,
       autoQuiz: saved.autoQuiz ?? true,
+      randomFallback:saved.randomFallback ?? true,
       foregroundCompat:!!saved.foregroundCompat,
       mouseGuard:saved.mouseGuard ?? true,
       courseId:saved.courseId || '',courseKey:saved.courseKey || '',
@@ -32,14 +33,14 @@ async function save() {
   const saved = {};
   for (const [key, s] of sessions) {
     saved[key] = { allowed: s.allowed, running: s.running, autoNext: s.autoNext,
-      muted: s.muted, resume: s.resume, playbackRate: s.playbackRate,
+      muted: s.muted, resume: s.resume, playbackRate: s.playbackRate,randomFallback:s.randomFallback,
       reason: s.reason, page: s.page, epoch: s.epoch, mode: s.mode, context:s.context, generation:s.generation, autoQuiz:s.autoQuiz, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard,courseId:s.courseId,courseKey:s.courseKey, automation:s.automation };
   }
   await chrome.storage.session.set({ sessions: saved });
 }
 function stateFor(tabId) {
   if (!sessions.has(tabId)) sessions.set(tabId, {
-    allowed: false, running: false, mode: "idle", autoNext: true, autoQuiz:true, foregroundCompat:false, mouseGuard:true, muted: false, resume: true, playbackRate: 0, automation:null,
+    allowed: false, running: false, mode: "idle", autoNext: true, autoQuiz:true, randomFallback:true, foregroundCompat:false, mouseGuard:true, muted: false, resume: true, playbackRate: 0, automation:null,
     reason: "点击开始后启动学习助手",courseId:'',courseKey:'', page: "", epoch: 0, generation: 0, context: "", reports: new Map(), changedAt: Date.now()
   });
   return sessions.get(tabId);
@@ -58,7 +59,7 @@ function snapshot(s) {
   const taskReady=taskCompleted && !result.blocked && !quizzes.length && !lessonPendingTasks && !taskResourcePending && !result.fresh.some(r=>r.lesson?.loadingImages) && Date.now()-s.changedAt>=4000;
   return { allowed: s.allowed, running: s.running, courseId:s.courseId,courseKey:s.courseKey,mode: s.mode, autoNext: s.autoNext,
     muted: s.muted, resume: s.resume, playbackRate: s.playbackRate, reason: s.reason, epoch: s.epoch,
-    generation: s.generation, autoQuiz:s.autoQuiz, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard, automation:s.automation || null, quizDetected: quizzes.length > 0, quizDone,
+    generation: s.generation, autoQuiz:s.autoQuiz, randomFallback:s.randomFallback, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard, automation:s.automation || null, quizDetected: quizzes.length > 0, quizDone,
     quizCount: quizzes.reduce((sum, r) => sum + r.quiz.count, 0),
     quizUnsupported:quizzes.reduce((sum,r)=>sum+r.quiz.unsupported,0),
     lessonDetected:lessons.length>0,lessonReady:lessons.length>0 && lessons.every(r=>r.lesson.ready) && !lessonPendingTasks && !lessonMediaPending && !result.blocked && result.count===0 && !quizzes.length && Date.now()-s.changedAt>=4000,
@@ -100,17 +101,23 @@ async function solveQuiz(s, sender) {
   const job = { controller: new AbortController(), busy: true, page: s.page, generation: s.generation };
   aiJobs.set(sender.tab.id, job);
   const timeout = setTimeout(() => job.controller.abort(), 240000);
+  const timings={},started=Date.now();let stage='read',stageAt=started;
+  const nextStage=name=>{timings[stage+'Ms']=Date.now()-stageAt;stage=name;stageAt=Date.now();};
   try {
     const extracted = await chrome.tabs.sendMessage(sender.tab.id, { channel: "xxt-player-v1", type: "QUIZ_READ" }, { frameId: report.frameId });
     if(extracted?.error)throw new Error(extracted.error);
     if (extracted?.page !== report.page) throw new Error("题目页面已经变化，请重新识别");
     if (extracted.unsupported) throw new Error(`存在 ${extracted.unsupported} 道未支持的题目，已停止自动作答`);
+    nextStage('transcribe');
     const progressHandler = progress => {
       job.progress=progress;
       const record=s.automation;
       if(!record || record.status!=='working' || s.generation!==job.generation) return;
       if(progress.phase==='batch') record.message=`正在请求第 ${progress.batch}/${progress.batches} 批答案`;
       if(progress.phase==='transcribing') record.message=`检测到混淆字体，正在按页面字形读取 ${progress.id}`;
+      if(progress.phase==='prepared') record.message=`题干准备 ${progress.completed}/${progress.total}${progress.randomOnly?'（该题将随机兜底）':''}`;
+      if(progress.phase==='batch-complete') record.message=`答案完成 ${progress.completed}/${progress.batches} 批`;
+      if(progress.phase==='random-fallback' || progress.phase==='random-fallback-pending') {record.message=`${progress.id} 将使用随机兜底（非模型答案）`;record.diagnostic={phase:progress.phase,id:progress.id,cause:progress.cause};}
       if(progress.phase==='transcription-format') record.diagnostic={phase:progress.phase,id:progress.id,attempt:progress.attempt,...progress.diagnostic};
       if(progress.phase==='transcription-retry') {
         record.message=`字形读题 ${progress.id} 返回格式无效，正在重新读取图片（1/1）`;
@@ -122,14 +129,21 @@ async function solveQuiz(s, sender) {
         record.diagnostic=progress.diagnostic;
       }
     };
-    const qs=await XXTDeepSeek.prepare(extracted.questions,job.controller.signal,progressHandler);
-    const answers = await XXTDeepSeek.solve(qs, job.controller.signal, progressHandler);
+    const fallbackOptions={randomFallback:()=>s.randomFallback};
+    const qs=await XXTDeepSeek.prepare(extracted.questions,job.controller.signal,progressHandler,fallbackOptions);
+    nextStage('answer');
+    const answers = await XXTDeepSeek.solve(qs, job.controller.signal, progressHandler,fallbackOptions);
+    nextStage('complete');
     if (s.page !== job.page || s.generation !== job.generation || aiJobs.get(sender.tab.id) !== job) throw new Error("章节已经切换，已丢弃旧题答案");
-    job.result = { frameId: report.frameId, page: report.page, fingerprint: extracted.fingerprint, questions: qs, answers };
+    job.result = { frameId: report.frameId, page: report.page, fingerprint: extracted.fingerprint, questions: qs, answers,timings };
     return { result: job.result };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "答题请求失败" };
-  } finally { clearTimeout(timeout); job.busy = false; }
+  } finally {
+    timings[stage+'Ms']=Date.now()-stageAt;timings.totalMs=Date.now()-started;
+    if(s.page===job.page && s.generation===job.generation && aiJobs.get(sender.tab.id)===job && s.automation?.status==='working')s.automation.timings=timings;
+    clearTimeout(timeout);job.busy = false;
+  }
 }
 async function autoQuiz(s,sender) {
   if (!s.running || !s.autoQuiz) return {automation:s.automation};
@@ -158,8 +172,10 @@ async function autoQuiz(s,sender) {
       job=aiJobs.get(sender.tab.id);
     }
     if(!s.running || !s.autoQuiz || !job?.result || job.controller.signal.aborted) throw new Error('自动流程已暂停');
+    record.randomCount=job.result.answers.filter(answer=>answer.source==='random').length;
+    if(record.randomCount && !s.randomFallback)throw new Error('随机兜底已关闭，请重新生成答案');
     job.busy=true;
-    record.message='正在自动填入并校验全部答案';
+    record.message='正在自动填入并校验全部答案'+(record.randomCount?`（含 ${record.randomCount} 道随机兜底）`:'');
     await save();
     const applied=await chrome.tabs.sendMessage(sender.tab.id,{channel:'xxt-player-v1',type:'QUIZ_APPLY',...job.result},{frameId:job.result.frameId});
     record.fillDiagnostic=Array.isArray(applied?.details)?applied.details:[];
@@ -168,6 +184,7 @@ async function autoQuiz(s,sender) {
       throw new Error(applied?.error || (failed?`填写校验失败（${failed}），已停止提交`:'题数或填写数量不一致，已停止提交'));
     }
     if(!s.running || !s.autoQuiz || job.controller.signal.aborted || s.generation!==job.generation) throw new Error('自动流程已暂停或章节已变化');
+    if(record.randomCount && !s.randomFallback)throw new Error('随机兜底已关闭，已停止提交');
     record.status='submitting';record.message='答案已全部校验，正在提交章节练习';
     await save();
     const submitted=await chrome.tabs.sendMessage(sender.tab.id,{channel:'xxt-player-v1',type:'QUIZ_SUBMIT',...job.result},{frameId:job.result.frameId});
@@ -295,6 +312,7 @@ async function handle(msg, sender) {
   if (msg.type === "AI_APPLY" && fromTop) {
     const job = aiJobs.get(sender.tab.id);
     if (!job?.result || job.page !== s.page || job.generation !== s.generation) return { error: "没有可填入的当前题目答案，请先生成" };
+    if(!s.randomFallback && job.result.answers.some(answer=>answer.source==='random'))return {error:'随机兜底已关闭，请重新生成答案'};
     return chrome.tabs.sendMessage(sender.tab.id, { channel: "xxt-player-v1", type: "QUIZ_APPLY", ...job.result }, { frameId: job.result.frameId });
   }
   if (msg.type === "CONTEXT" && fromTop && s.context !== msg.context) {
@@ -383,7 +401,7 @@ async function handle(msg, sender) {
       s.mode = "attention";
       s.reason = String(msg.reason || "需要手动处理").slice(0, 120);
     }
-    for (const key of ["autoNext", "muted", "resume", "autoQuiz", "foregroundCompat", "mouseGuard"]) {
+    for (const key of ["autoNext", "muted", "resume", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) {
       if (typeof msg[key] === "boolean") s[key] = msg[key];
     }
     if(msg.autoQuiz===false) aiJobs.get(sender.tab.id)?.controller.abort();

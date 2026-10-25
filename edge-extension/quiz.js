@@ -163,7 +163,8 @@
       details.push({id:item.id,type:item.type,...verification,reason:verification.ok?'已通过':reasons[verification.code] || '填写状态未通过校验'});
       let note = item.root.querySelector('.xxt-ai-explanation');
       if (!note) { note = document.createElement('p'); note.className = 'xxt-ai-explanation'; note.style.cssText = 'padding:10px;color:#204477;background:#eef4fc;white-space:pre-wrap'; item.root.append(note); }
-      note.textContent = `DeepSeek 答案：${answer.answer.join('、')}。${answer.reason || ''}`;
+      note.textContent = `${answer.source==='random'?'随机兜底（非模型答案）':'DeepSeek 答案'}：${answer.answer.join('、')}。${answer.reason || ''}`;
+      note.style.background=answer.source==='random'?'#fff3cf':'#eef4fc';
       note.style.fontFamily='"Microsoft YaHei",sans-serif';
     }
     return { applied, failed, details, total:current.total, unsupported:current.unsupported };

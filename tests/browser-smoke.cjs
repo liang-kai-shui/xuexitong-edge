@@ -140,6 +140,28 @@ async function main() {
   await waitFor("!!document.querySelector('#xxt-player-assistant')?.shadowRoot");
   const click = id => evaluate(`document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#${id}').click()`);
   const reason = text => `document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes(${JSON.stringify(text)})`;
+  if(process.argv.includes('--fallback-only')) {
+    assert.equal(await evaluate("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#randomFallback').checked"),true);
+    await click('autoNext');
+    await evaluate(`(()=>{
+      showQuiz();const submit=document.querySelector('#submit'),originalSubmit=submit.onclick;
+      submit.onclick=()=>{fixture.randomNote=document.querySelector('.xxt-ai-explanation')?.textContent || '';originalSubmit();};
+      const base=window.fetch;window.fetch=async(url,options)=>{
+        if(url!=='https://api.deepseek.com/chat/completions')return base(url,options);
+        fixture.apiCalls++;const body=JSON.parse(options.body),qs=JSON.parse(body.messages[1].content).questions;
+        return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({answers:qs.map(q=>({id:q.id,answer:q.id==='q1'?[]:q.type==='short'?[fixture.shortAnswer]:q.type==='multiple'?['A','B']:['A']}))})}}]}),{status:200});
+      };
+    })()`);
+    await click('start');await waitFor('fixture.submits===1',18000);
+    assert.equal(await evaluate('fixture.apiCalls'),2,'empty q1 must not cause two extra answer requests');
+    assert.equal(await evaluate("fixture.randomNote.startsWith('随机兜底（非模型答案）')"),true);
+    await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#detail').textContent.includes('1 道随机兜底')");
+    await click('randomFallback');
+    await evaluate("document.querySelector('#review-next').click();showQuiz()");await click('start');
+    await waitFor(reason('空答案'),16000);assert.equal(await evaluate('fixture.submits'),1);
+    console.log('PASS: empty objective answer becomes a labelled random choice and submits without extra retries; opting out stops without a second submission');
+    await command('Browser.close');return;
+  }
   if(process.argv.includes('--tasks-only')) {
     await click('autoQuiz');
     const checks=await evaluate(`(()=>{
@@ -304,7 +326,7 @@ async function main() {
     await command('Browser.close');return;
   }
   if(process.argv.includes('--font-only')) {
-    await click('autoQuiz');await evaluate('showQuiz()');
+    await click('autoQuiz');await click('randomFallback');await evaluate('showQuiz()');
     await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#detail').textContent.includes('6 道')");
     await evaluate("(async()=>{const face=new FontFace('font-cxsecret','local(\"Wingdings\")');await face.load();document.fonts.add(face);const title=document.querySelector('.fontLabel');title.classList.add('font-cxsecret');title.style.fontFamily='font-cxsecret';title.textContent='ii';fixture.encryptedImage=(await XXTQuiz.read()).questions[0].image;title.style.fontFamily='sans-serif';fixture.plainImage=(await XXTQuiz.read()).questions[0].image;title.style.fontFamily='font-cxsecret';})()");
     assert.equal(await evaluate('fixture.encryptedImage===fixture.plainImage'),false,'question image must use actual page glyphs rather than raw text with a generic font');
@@ -420,6 +442,7 @@ async function main() {
     await command('Browser.close');return;
   }
   await click('autoQuiz');
+  await click('randomFallback');
   await waitFor("!document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#autoQuiz').checked");
   await evaluate("document.querySelector('video').play()");
   await delay(1300);

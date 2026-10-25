@@ -593,6 +593,139 @@ test('malformed answers stop after two per-question retries and diagnostics omit
   await assert.rejects(()=>api.solve(exampleQuestions,new AbortController().signal,track),/2 次逐题重试/);
   assert.equal(calls.length,3);assert.equal(JSON.stringify(progress).includes('private arbitrary text'),false);
 });
+
+test('numeric option values map only to a unique exact choice and diagnostics classify invalid arrays',()=>{
+  const api=fixture().context.XXTDeepSeek;
+  const q={id:'q1',type:'single',stem:'计算表达式的值',options:['0','2','4','8'].map((text,i)=>({key:String.fromCharCode(65+i),text}))};
+  for(const answer of [[4],['4'],'4',['C. 4']])assert.equal(api.answers(JSON.stringify({answers:[{id:'q1',answer}]}),[q])[0].answer[0],'C');
+  const ambiguous={...q,options:[{key:'A',text:'4'},{key:'B',text:'4'}]};
+  assert.equal(api.inspect(JSON.stringify({answers:[{id:'q1',answer:[4]}]}),[ambiguous]).diagnostic.invalid[0].code,'ambiguous-option');
+  for(const [answer,code] of [[[],'empty-answer'],[[99],'unknown-option'],[['A','B'],'answer-count'],[[{}],'answer-type']]){
+    const result=api.inspect(JSON.stringify({answers:[{id:'q1',answer}]}),[q]);assert.equal(result.byId.size,0);assert.equal(result.diagnostic.invalid[0].code,code);
+  }
+  const caseSensitive={...q,options:[{key:'A',text:'value'},{key:'B',text:'VALUE'}]};
+  assert.equal(api.answers(JSON.stringify({answers:[{id:'q1',answer:'value'}]}),[caseSensitive])[0].answer[0],'A');
+});
+
+test('random fallback handles empty objective answers immediately and preserves valid answers',async()=>{
+  const {api,calls,track,progress}=schemaFixture(data=>({answers:data.questions.map(q=>({id:q.id,answer:q.id==='q1'?[]:['B']}))}));
+  const qs=[exampleQuestions[0],{...exampleQuestions[0],id:'q2'}];
+  const result=await api.solve(qs,new AbortController().signal,track,{randomFallback:true});
+  assert.equal(calls.length,1);assert.equal(result[0].source,'random');assert.match(result[0].reason,/随机兜底/);
+  assert.ok(['A','B'].includes(result[0].answer[0]));assert.equal(result[1].answer[0],'B');assert.equal(result[1].source,undefined);
+  assert.equal(progress.filter(p=>p.phase==='random-fallback').length,1);
+});
+
+test('random fallback is bounded to valid nonempty choice sets after format or request errors',async()=>{
+  for(const mode of ['invalid','http']) {
+    let calls=0;
+    const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async()=>{calls++;return mode==='http'?{ok:false,status:429}:{ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'private arbitrary output'}}]})};}});
+    const qs=[{...exampleQuestions[0],type:'multiple'},{...exampleQuestions[0],id:'q2',type:'judge'}];
+    const result=await f.context.XXTDeepSeek.solve(qs,new AbortController().signal,()=>{},{randomFallback:true});
+    assert.equal(result.length,2);
+    for(const a of result){assert.equal(a.source,'random');assert.ok(a.answer.length>0);assert.ok(a.answer.every(key=>['A','B'].includes(key)));assert.equal(JSON.stringify(a).includes('private arbitrary output'),false);}
+    assert.equal(result[1].answer.length,1);
+    assert.equal(calls,1,'enabled random fallback must not spend two more requests on invalid choices');
+  }
+});
+
+test('short answers never receive random text and opt-out still stops on an empty answer',async()=>{
+  for(const q of [exampleQuestions[0],shortQuestion]) {
+    const {api,calls}=schemaFixture(()=>({answers:[{id:q.id,answer:[]}]}));
+    await assert.rejects(()=>api.solve([q],new AbortController().signal,()=>{},{randomFallback:q.type==='short'}),/空答案/);
+    assert.equal(calls.length,1);
+  }
+});
+
+test('failed glyph reading can select only known choices without sending encrypted or placeholder text to the answer model',async()=>{
+  let calls=0;
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+    calls++;const body=JSON.parse(request.body);assert.ok(Array.isArray(body.messages[1].content));assert.equal(JSON.stringify(body).includes('混淆秘密'),false);
+    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({id:'q1',readable:false,stem:'无法确认',options:[]})}}]})};
+  }});
+  const opts={randomFallback:true},signal=new AbortController().signal;
+  const prepared=await f.context.XXTDeepSeek.prepare([{...exampleQuestions[0],stem:'混淆秘密',encrypted:true,image:'data:image/png;base64,AAAA'}],signal,()=>{},opts);
+  assert.equal(prepared[0].randomOnly,true);assert.equal(JSON.stringify(prepared).includes('混淆秘密'),false);
+  const result=await f.context.XXTDeepSeek.solve(prepared,signal,()=>{},opts);
+  assert.equal(result[0].source,'random');assert.equal(calls,1);
+  await assert.rejects(()=>f.context.XXTDeepSeek.solve(prepared,signal,()=>{},{randomFallback:false}),/随机兜底已关闭/);
+});
+
+test('random fallback preference defaults on, is top-frame only and survives worker restart',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});assert.equal((await f.send({type:'CONTROL',randomFallback:false},2)).randomFallback,true);
+  await f.send({type:'CONTROL',randomFallback:false});assert.equal((await fixture(f.store).send({type:'HELLO'})).randomFallback,false);
+});
+
+test('automatic fallback continues filling with a marked random answer and does not repeat it during submission wait',async()=>{
+  const {f,counts,report}=automaticFixture({fetchOverride:async()=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({answers:[{id:'q1',answer:[]},{id:'q2',answer:[shortAnswer]}]})}}]})})});
+  await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});await report();
+  const result=await f.send({type:'AUTO_QUIZ'});assert.equal(result.automation.status,'awaiting_confirmation');assert.equal(result.automation.randomCount,1);
+  await f.send({type:'AUTO_QUIZ'});assert.equal(counts.submit,1);assert.equal(counts.apply,1);
+  assert.ok(Object.hasOwn(result.automation.timings,'answerMs'));
+  await f.send({type:'CONTROL',randomFallback:false});assert.match((await f.send({type:'AI_APPLY'})).error,/随机兜底已关闭/);
+});
+const flushRequests=()=>new Promise(resolve=>setImmediate(resolve));
+function queuedFixture() {
+  const queued=[],calls=[];let active=0,maxActive=0,aborted=0;
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+    const body=JSON.parse(request.body);calls.push(body);active++;maxActive=Math.max(maxActive,active);
+    return new Promise((resolve,reject)=>{
+      let done=false;
+      const onAbort=()=>{if(done)return;done=true;active--;aborted++;reject(new DOMException('aborted','AbortError'));};
+      request.signal.addEventListener('abort',onAbort,{once:true});
+      queued.push({body,finish(content){if(done)return;done=true;active--;request.signal.removeEventListener('abort',onAbort);resolve({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(content)}}]})});}});
+    });
+  }});
+  return {f,queued,calls,stats:()=>({active,maxActive,aborted})};
+}
+
+test('six glyph requests run in three bounded waves and keep question order after reversed responses',async()=>{
+  const t=queuedFixture();
+  const input=Array.from({length:6},(_,i)=>({id:`q${i+1}`,type:'short',stem:'混淆原文',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}));
+  const result=t.f.context.XXTDeepSeek.prepare(input,new AbortController().signal);
+  for(let wave=0;wave<3;wave++){
+    await flushRequests();assert.equal(t.queued.length,2);
+    const group=t.queued.splice(0,2);
+    for(const pending of group.reverse()){
+      const meta=JSON.parse(pending.body.messages[1].content[0].text);
+      pending.finish({id:meta.id,readable:true,stem:'题干 '+meta.id,options:[]});
+    }
+  }
+  const prepared=await result;assert.equal(t.stats().maxActive,2);assert.equal(t.calls.length,6);
+  assert.deepEqual(Array.from(prepared,q=>q.id),input.map(q=>q.id));
+});
+
+test('answer batches overlap with at most two requests and keep original order',async()=>{
+  const t=queuedFixture(),qs=Array.from({length:12},(_,i)=>({...exampleQuestions[0],id:`q${i+1}`}));
+  const result=t.f.context.XXTDeepSeek.solve(qs,new AbortController().signal);
+  const finish=pending=>{const data=JSON.parse(pending.body.messages[1].content);pending.finish({answers:data.questions.map(q=>({id:q.id,answer:['A']}))});};
+  await flushRequests();assert.equal(t.queued.length,2);const first=t.queued.shift();finish(t.queued.shift());
+  await flushRequests();assert.equal(t.queued.length,1);finish(t.queued.shift());finish(first);
+  const answers=await result;assert.equal(t.stats().maxActive,2);assert.equal(t.calls.length,3);
+  assert.deepEqual(Array.from(answers,a=>a.id),qs.map(q=>q.id));
+});
+
+test('a fatal short transcription cancels the sibling and never starts queued questions',async()=>{
+  const t=queuedFixture(),input=Array.from({length:3},(_,i)=>({id:`q${i+1}`,type:'short',stem:'原文',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}));
+  const result=t.f.context.XXTDeepSeek.prepare(input,new AbortController().signal,()=>{},{randomFallback:true});
+  const rejected=assert.rejects(()=>result,/未能完整确认/);
+  await flushRequests();assert.equal(t.queued.length,2);
+  t.queued.shift().finish({id:'q1',readable:false,stem:'未知',options:[]});await rejected;await flushRequests();
+  assert.equal(t.calls.length,2);assert.equal(t.stats().aborted,1);assert.equal(t.stats().active,0);
+});
+
+test('pausing concurrent answer requests never substitutes random choices',async()=>{
+  const t=queuedFixture(),controller=new AbortController(),progress=[];
+  const result=t.f.context.XXTDeepSeek.solve(Array.from({length:6},(_,i)=>({...exampleQuestions[0],id:`q${i+1}`})),controller.signal,event=>progress.push(event),{randomFallback:true});
+  const rejected=assert.rejects(()=>result);await flushRequests();assert.equal(t.calls.length,2);controller.abort();await rejected;await flushRequests();
+  assert.equal(t.stats().aborted,2);assert.equal(progress.some(p=>p.phase==='random-fallback'),false);
+});
+
+test('turning off fallback while a model request completes prevents a random answer',async()=>{
+  let enabled=true;const {api}=schemaFixture(()=>({answers:[{id:'q1',answer:[]}]}));
+  await assert.rejects(()=>api.solve(exampleQuestions,new AbortController().signal,event=>{if(event.phase==='schema')enabled=false;},{randomFallback:()=>enabled}),/空答案/);
+});
+
 test('pausing before a schema retry aborts without another API request',async()=>{
   const controller=new AbortController();const {api,calls}=schemaFixture(()=>({answers:[]}));
   await assert.rejects(()=>api.solve(exampleQuestions,controller.signal,event=>{if(event.phase==='schema')controller.abort();}));
