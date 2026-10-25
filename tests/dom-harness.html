@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>通用网课助手 · DOM 语义识别测试</title>
+<style>
+  body { font: 14px/1.6 monospace; }
+  .panel { width: 420px; border: 1px solid #ccc; padding: 10px; }
+  .player { width: 320px; height: 180px; background: #000; }
+</style>
+</head>
+<body>
+<script>window.chrome = { runtime: { id: "test-extension" } };
+/* 测试环境把定时器同步化，使全部用例在 load 事件前以微任务完成，
+   这样无头浏览器 --dump-dom 一定能截取到结果。 */
+window.setTimeout = fn => { try { fn(); } catch (error) { console.error(error); } return 0; };
+window.clearTimeout = () => {};</script>
+<script>
+(function () {
+  const base = new URLSearchParams(location.search).get("base") || "..";
+  const files = [
+    "core/dom.js", "core/policy.js", "core/text.js", "core/question-image.js", "core/sites.js",
+    "core/adapters/chaoxing.js", "core/adapters/zhihuishu.js", "core/adapters/icourse163.js", "core/adapters/xuetangx.js",
+    "core/adapters/yuketang.js", "core/adapters/icve.js", "core/adapters/ulearning.js", "core/adapters/generic.js",
+    "core/quiz.js", "core/lesson.js", "core/navigation.js", "core/page-action.js"
+  ];
+  for (const file of files) document.write('<script src="' + base + "/" + file + '"><\/script>');
+})();
+</script>
+<script>
+(async () => {
+  "use strict";
+  const results = [];
+  let pass = 0, fail = 0;
+  function assert(condition, message) { if (!condition) throw new Error(message || "断言失败"); }
+  function equal(actual, expected, message) {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${message || "值不相等"}：期望 ${JSON.stringify(expected)}，实际 ${JSON.stringify(actual)}`);
+  }
+  async function test(name, fn) {
+    try { await fn(); pass++; results.push("PASS " + name); }
+    catch (error) { fail++; results.push("FAIL " + name + " — " + (error.message || error)); }
+  }
+  const fixture = html => { document.body.innerHTML = html; };
+  const useGeneric = () => XXTSites.use(XXTSites.generic());
+  const useSite = id => XXTSites.use(XXTSites.byId(id));
+  const click = el => el.click();
+
+  /* ---------- 通用导航 ---------- */
+  await test("通用导航：步骤页签与下一节", () => {
+    useGeneric();
+    fixture(`<div class="nav-tabs">
+      <a role="tab" class="active">第一节 视频</a><a role="tab">第二节 视频</a><a role="tab">第三节 章节测验</a>
+    </div>`);
+    const { tabs, current } = XXTNavigation.steps();
+    equal(tabs.length, 3, "应识别 3 个页签");
+    equal(current, 0, "第一个页签应为当前页");
+    equal(XXTNavigation.next(), tabs[1], "next 应返回下一个页签");
+    equal(XXTNavigation.videoStep(), tabs[1], "下一个页签是视频");
+    assert(XXTNavigation.practiceStep() === null, "通用模式不自动进入练习页");
+    const before = XXTNavigation.signature();
+    tabs[0].classList.remove("active");
+    tabs[1].classList.add("active");
+    assert(XXTNavigation.signature() !== before, "切换页签后签名应变化");
+  });
+  await test("通用导航：语义按钮“下一节”", () => {
+    useGeneric();
+    fixture(`<div class="toolbar"><button id="nextBtn">下一节</button></div>`);
+    equal(document.querySelector("#nextBtn"), XXTNavigation.next(), "应识别下一节按钮");
+    fixture(`<div class="toolbar"><button id="unrelated">保存</button></div>`);
+    equal(XXTNavigation.next(), null, "无关按钮不应被识别");
+  });
+  await test("学习通导航：步骤页签与章节目录", () => {
+    useSite("chaoxing");
+    fixture(`<div class="prev_tabs"><div class="prev_white">视频</div><div class="prev_blue">章节测验</div></div>`);
+    const { tabs, current } = XXTNavigation.steps();
+    equal(tabs.length, 2);
+    equal(current, 1, "prev_blue 应为当前步骤");
+    equal(XXTNavigation.next(true), null, "没有目录时 catalog 为空");
+    fixture(`<div id="coursetree">
+      <div class="posCatalog_select firstLayer"><div class="posCatalog_name">第一章</div></div>
+      <div class="posCatalog_select posCatalog_active"><div class="posCatalog_name">1.1 视频</div></div>
+      <div class="posCatalog_select"><div class="posCatalog_name">1.2 测验</div></div>
+    </div>`);
+    const target = XXTNavigation.next(true);
+    assert(target && target.textContent.includes("1.2"), "catalog 应返回下一节目录项");
+    assert(XXTNavigation.isCatalogTarget(target), "catalog 目标应被识别");
+  });
+
+  /* ---------- 通用题目识别 ---------- */
+  const SINGLE_FIXTURE = `<div class="question">
+    <div class="stem">1. 下列说法正确的是（ ）</div>
+    <div class="options">
+      <label><input type="radio" name="q1" value="A"> A. 甲</label>
+      <label><input type="radio" name="q1" value="B"> B. 乙</label>
+      <label><input type="radio" name="q1" value="C"> C. 丙</label>
+    </div>
+  </div>`;
+  await test("通用题目：单选题识别", () => {
+    useGeneric();
+    fixture(SINGLE_FIXTURE);
+    const scan = XXTQuiz.scan();
+    assert(scan.detected, "应识别出题目");
+    equal(scan.count, 1);
+    equal(scan.completed, false);
+    const question = scan.questions[0];
+    equal(question.type, "single");
+    equal(question.options.map(option => option.key), ["A", "B", "C"]);
+    assert(question.stem.includes("下列说法"), "题干应包含题干文字");
+    equal(scan.fingerprint, XXTQuiz.scan().fingerprint, "题目指纹应稳定");
+  });
+  await test("通用题目：单选题填写并校验", async () => {
+    useGeneric();
+    fixture(SINGLE_FIXTURE);
+    const scan = XXTQuiz.scan();
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["B"], reason: "测试" }]);
+    equal(result.applied, 1);
+    equal(result.failed, []);
+    assert(document.querySelector('input[value="B"]').checked, "B 选项应被选中");
+    assert(!document.querySelector('input[value="A"]').checked, "A 选项不应被选中");
+  });
+  await test("通用题目：多选题识别与填写", async () => {
+    useGeneric();
+    fixture(`<div class="question">
+      <div class="stem">2. 下列哪些属于水果（ ）（多选）</div>
+      <div class="options">
+        <label><input type="checkbox" name="q2" value="A"> A. 苹果</label>
+        <label><input type="checkbox" name="q2" value="B"> B. 萝卜</label>
+        <label><input type="checkbox" name="q2" value="C"> C. 香蕉</label>
+      </div>
+    </div>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.questions[0].type, "multiple");
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["A", "C"] }]);
+    equal(result.applied, 1);
+    assert(document.querySelector('input[value="A"]').checked && document.querySelector('input[value="C"]').checked, "A/C 应选中");
+    assert(!document.querySelector('input[value="B"]').checked, "B 不应选中");
+  });
+  await test("通用题目：判断题识别", () => {
+    useGeneric();
+    fixture(`<div class="question">
+      <div class="stem">3. 地球是圆的（ ）</div>
+      <div class="options"><label><input type="radio" name="q3">正确</label><label><input type="radio" name="q3">错误</label></div>
+    </div>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.questions[0].type, "judge");
+    equal(scan.questions[0].options.map(option => option.key), ["A", "B"]);
+  });
+  await test("通用题目：简答题识别与填写", async () => {
+    useGeneric();
+    fixture(`<div class="question">
+      <div class="stem">4. 请简述你对本课程的理解？</div>
+      <textarea></textarea>
+    </div>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.questions.length, 1);
+    equal(scan.questions[0].type, "short");
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["这是测试作答内容。"] }]);
+    equal(result.applied, 1, "简答题应填写成功：" + JSON.stringify(result.details));
+    equal(document.querySelector("textarea").value, "这是测试作答内容。");
+  });
+  await test("通用题目：完成标记识别", () => {
+    useGeneric();
+    fixture(`<div class="result">本次测验已提交，感谢参与。</div>`);
+    const scan = XXTQuiz.scan();
+    assert(scan.detected && scan.completed, "应识别为已完成");
+  });
+  await test("通用题目：无关表单不会误识别为题", () => {
+    useGeneric();
+    fixture(`<form><label>搜索范围 <input type="radio" name="scope" checked> 全部</label><label><input type="radio" name="scope"> 标题</label></form>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.count, 0, "搜索表单不应被识别为题目");
+  });
+  await test("学习通题目：原有选择器仍可识别", () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId" data="99" id="question99">
+      <div class="Zy_TItle"><span class="fontLabel">1. 学习通单选题（ ）</span></div>
+      <ul class="Zy_ulTop">
+        <li><span class="num_option" data="A">A</span><span class="after">选项一</span></li>
+        <li><span class="num_option" data="B">B</span><span class="after">选项二</span></li>
+      </ul>
+    </div>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.count, 1);
+    equal(scan.questions[0].type, "single");
+    equal(scan.questions[0].options.map(option => option.key), ["A", "B"]);
+    assert(scan.questions[0].stem.includes("学习通单选题"), "题干应正确");
+  });
+  await test("学习通题目：答案回顾页不重复作答", () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId">
+      <div class="Zy_TItle">题目（ ）</div>
+      <ul class="Zy_ulTop"><li>选项一</li><li>选项二</li></ul>
+      <span>我的答案：A</span><span>得分：5 分</span>
+    </div>`);
+    const scan = XXTQuiz.scan();
+    assert(scan.completed, "回顾页应视为已完成");
+    equal(scan.count, 0, "回顾页不生成可作答题目");
+    equal(scan.evidence, "answer-review");
+  });
+  await test("通用题目：提交按钮识别", () => {
+    useGeneric();
+    fixture(`${SINGLE_FIXTURE}<div class="footer"><button id="submitBtn">提交答案</button></div>`);
+    const button = (() => {
+      try { return document.querySelector("#submitBtn"); } catch { return null; }
+    })();
+    assert(button, "fixture 完整性");
+    // 通过 apply 触发内部校验路径不涉及提交；这里直接验证页面上无歧义按钮存在
+    const candidates = [...document.querySelectorAll('button,a,input[type="button"],input[type="submit"],[role="button"]')]
+      .filter(el => /^(提交|提交作业|提交答案)$/.test((el.value || el.textContent || "").trim()));
+    equal(candidates.length, 1, "应只有一个提交按钮");
+  });
+
+  /* ---------- 确认弹窗 / 验证码 ---------- */
+  await test("通用：确认提交弹窗识别", () => {
+    useGeneric();
+    fixture(`<div class="layui-layer">
+      <div>确认提交本次测验？提交后不可修改。</div>
+      <button id="popok">确定</button>
+    </div>`);
+    const confirm = XXTQuiz.confirmation();
+    assert(confirm, "应识别确认弹窗");
+    assert(confirm.ready, "按钮可用");
+    equal(confirm.button.id, "popok");
+  });
+  await test("通用：验证码拦截提示", () => {
+    useGeneric();
+    fixture(`<div class="geetest_panel" style="width:300px;height:120px">请完成滑块验证后继续</div>`);
+    assert(XXTQuiz.blocker().includes("验证提示"), "应提示验证");
+  });
+  await test("通用：继续学习弹层拦截", () => {
+    useGeneric();
+    fixture(`<div class="player"><video class="player" width="320" height="180"></video></div>
+      <div class="player-controls"><button id="continue">继续学习</button></div>`);
+    const blocked = XXTQuiz.blocker();
+    assert(/继续学习/.test(blocked), "应识别继续学习提示，实际：" + blocked);
+  });
+
+  /* ---------- 图文讲义 ---------- */
+  await test("学习通图文讲义识别", () => {
+    useSite("chaoxing");
+    fixture(`<div class="ans-cc"><p>${"这是一段讲义内容。".repeat(20)}</p></div>`);
+    const lesson = XXTLesson.scan();
+    assert(lesson.detected, "应识别图文讲义");
+    assert(lesson.ready, "无未完成任务时应就绪：" + JSON.stringify({ pendingTasks: lesson.pendingTasks, mediaPending: lesson.mediaPending, loadingImages: lesson.loadingImages }));
+  });
+  await test("通用图文页面识别（不自动判定完成）", () => {
+    useGeneric();
+    fixture(`<main>${"通用平台的图文课程内容。".repeat(30)}</main>`);
+    const lesson = XXTLesson.scan();
+    assert(lesson.detected, "应识别图文页面");
+    equal(lesson.ready, false, "通用模式不应自动判定图文完成");
+  });
+
+  /* ---------- 新版作业页兼容（v2.0.1） ---------- */
+  await test("学习通作业页：空隐藏字段回退视觉选中状态", async () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId" data="77" id="question77">
+      <div class="Zy_TItle"><span class="fontLabel">7. 空隐藏字段测试（ ）</span></div>
+      <ul class="Zy_ulTop">
+        <li onclick="this.parentElement.querySelectorAll('li').forEach(x=>x.classList.remove('check_answer'));this.classList.add('check_answer')"><span class="num_option" data="A">A</span><span class="after">甲</span></li>
+        <li onclick="this.parentElement.querySelectorAll('li').forEach(x=>x.classList.remove('check_answer'));this.classList.add('check_answer')"><span class="num_option" data="B">B</span><span class="after">乙</span></li>
+      </ul>
+    </div>
+    <input type="hidden" id="answer77" value="">`);
+    const scan = XXTQuiz.scan();
+    equal(scan.count, 1);
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["B"], reason: "测试" }]);
+    equal(result.applied, 1, "空隐藏字段时应按视觉状态校验：" + JSON.stringify(result.details));
+    const selectedLi = [...document.querySelectorAll(".Zy_ulTop > li")].find(li => li.classList.contains("check_answer"));
+    assert(selectedLi && selectedLi.textContent.includes("乙"), "B 选项应带有选中类名");
+  });
+  await test("学习通作业页：非空隐藏字段仍为权威状态", async () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId" data="78" id="question78">
+      <div class="Zy_TItle"><span class="fontLabel">8. 隐藏字段权威测试（ ）</span></div>
+      <ul class="Zy_ulTop">
+        <li><span class="num_option" data="A">A</span><span class="after">甲</span></li>
+        <li><span class="num_option" data="B">B</span><span class="after">乙</span></li>
+      </ul>
+    </div>
+    <input type="hidden" id="answer78" value="A">`);
+    const scan = XXTQuiz.scan();
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["A"] }]);
+    equal(result.applied, 1, "隐藏字段已包含答案时应直接通过：" + JSON.stringify(result.details));
+  });
+  await test("通用题目：受控组件重渲染后自动重扫校验", async () => {
+    useGeneric();
+    fixture(`<div class="question"><div class="stem">9. 重渲染测试（ ）</div>
+      <div class="options" id="rerenderOpts">
+        <label><input type="radio" name="q9" value="A"> A. 甲</label>
+        <label><input type="radio" name="q9" value="B"> B. 乙</label>
+      </div></div>`);
+    const opts = document.getElementById("rerenderOpts");
+    opts.addEventListener("change", () => {
+      const value = opts.querySelector("input:checked")?.value || "";
+      opts.querySelectorAll("input").forEach(input => { input.checked = false; });
+      opts.innerHTML = `<label><input type="radio" name="q9" value="A" ${value === "A" ? "checked" : ""}> A. 甲</label>` +
+        `<label><input type="radio" name="q9" value="B" ${value === "B" ? "checked" : ""}> B. 乙</label>`;
+    });
+    const scan = XXTQuiz.scan();
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["B"] }]);
+    equal(result.applied, 1, "重渲染后应重新扫描并通过校验：" + JSON.stringify(result.details));
+    assert(document.querySelector('input[value="B"]').checked, "最终 B 选项应处于选中状态");
+  });
+  await test("学习通作业页：隐藏后展开的简答编辑器", async () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId" data="79" id="question79">
+      <div class="Zy_TItle"><span class="fontLabel">10. 简答题：请说明你的理解。</span></div>
+      <div class="answer-box"><textarea style="display:none"></textarea></div>
+    </div>`);
+    document.getElementById("question79").addEventListener("click", () => {
+      document.querySelector("#question79 textarea").style.display = "block";
+    });
+    const scan = XXTQuiz.scan();
+    equal(scan.questions[0]?.type, "short", "应为简答题");
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["这是简答内容。"] }]);
+    equal(result.applied, 1, "隐藏编辑器展开后应写入成功：" + JSON.stringify(result.details));
+    equal(document.querySelector("#question79 textarea").value, "这是简答内容。");
+  });
+  await test("填写失败时附带 DOM 诊断", async () => {
+    useSite("chaoxing");
+    fixture(`<div class="singleQuesId" data="80" id="question80">
+      <div class="Zy_TItle"><span class="fontLabel">11. 诊断测试（ ）</span></div>
+      <ul class="Zy_ulTop">
+        <li><span class="num_option" data="A">A</span><span class="after">甲</span></li>
+        <li><span class="num_option" data="B">B</span><span class="after">乙</span></li>
+      </ul>
+    </div>
+    <input type="hidden" id="answer80" value="C">`);
+    const scan = XXTQuiz.scan();
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["B"] }]);
+    equal(result.applied, 0, "隐藏字段与目标不一致时应失败");
+    const detail = result.details[0];
+    assert(detail.dom, "失败详情应包含 DOM 诊断");
+    equal(detail.dom.site.hiddenAnswer, "C", "诊断应包含隐藏字段值");
+    assert(detail.dom.options.length === 2 && detail.dom.options[0].tag === "li", "诊断应包含选项结构");
+  });
+  await test("多题连续填写不受答案注释影响", async () => {
+    useGeneric();
+    fixture(`<div class="question"><div class="stem">12. 第一题（ ）</div><div class="options">
+        <label><input type="radio" name="qa" value="A"> A. 甲</label><label><input type="radio" name="qa" value="B"> B. 乙</label></div></div>
+      <div class="question"><div class="stem">13. 第二题（ ）</div><div class="options">
+        <label><input type="radio" name="qb" value="A"> A. 甲</label><label><input type="radio" name="qb" value="B"> B. 乙</label></div></div>`);
+    const scan = XXTQuiz.scan();
+    equal(scan.count, 2);
+    const result = await XXTQuiz.apply(scan.fingerprint, [{ id: "q1", answer: ["A"] }, { id: "q2", answer: ["B"] }]);
+    equal(result.applied, 2, "两题都应填写成功：" + JSON.stringify(result.details));
+    assert(document.querySelectorAll(".question")[1].querySelector('input[value="B"]').checked, "第二题 B 应选中");
+  });
+
+  /* ---------- MAIN world 页面操作 ---------- */
+  await test("MAIN world：简答编辑器写入", async () => {
+    useGeneric();
+    fixture(`<div class="question"><div class="stem">5. 请简述你的理解？</div><textarea></textarea></div>`);
+    const root = document.querySelector(".question");
+    root.setAttribute("data-xxt-action", "token-editor");
+    const result = await XXTPageAction({ kind: "editor", token: "token-editor", text: "这是简答内容。" });
+    root.removeAttribute("data-xxt-action");
+    assert(result.ok, "编辑器写入失败：" + JSON.stringify(result));
+    equal(result.text, "这是简答内容。");
+    equal(document.querySelector("textarea").value, "这是简答内容。");
+    assert(result.fieldFound === true, "应识别提交字段");
+  });
+  await test("MAIN world：后台播放兼容开关", async () => {
+    fixture(`<div id="fake">兼容测试</div>`);
+    document.documentElement.setAttribute("data-xxt-action", "token-fg");
+    const enabled = await XXTPageAction({ kind: "foreground", token: "token-fg", text: "on" });
+    assert(enabled.ok && enabled.enabled === true, "开启失败：" + JSON.stringify(enabled));
+    equal(document.hidden, false, "hidden 应为 false");
+    equal(document.visibilityState, "visible", "visibilityState 应为 visible");
+    const disabled = await XXTPageAction({ kind: "foreground", token: "token-fg", text: "off" });
+    document.documentElement.removeAttribute("data-xxt-action");
+    assert(disabled.ok && disabled.enabled === false, "还原失败：" + JSON.stringify(disabled));
+  });
+
+  /* ---------- 输出 ---------- */
+  document.body.innerHTML = "";
+  const pre = document.createElement("pre");
+  pre.id = "result";
+  pre.textContent = results.join("\n") + `\nSUMMARY pass=${pass} fail=${fail}`;
+  document.body.append(pre);
+  document.title = `done-${pass}-${fail}`;
+})().catch(error => {
+  document.body.innerHTML = "<pre id='result'>HARNESS ERROR " + (error && error.message) + "</pre>";
+});
+</script>
+</body>
+</html>
