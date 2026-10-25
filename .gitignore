@@ -1,0 +1,11 @@
+.local/
+*.zip
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+Thumbs.db
+.DS_Store
+*deepseek-config*.json

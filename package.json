@@ -1,0 +1,12 @@
+{
+  "name": "xuexitong-edge",
+  "version": "1.7.1",
+  "private": true,
+  "description": "学习通课程学习页的 Microsoft Edge 本地扩展",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "check": "node scripts/check.cjs",
+    "test": "node --test tests/worker.test.cjs tests/text.test.cjs",
+    "test:browser": "node tests/browser-smoke.cjs"
+  }
+}
