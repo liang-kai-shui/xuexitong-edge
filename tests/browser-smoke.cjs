@@ -73,7 +73,7 @@ window.importScripts=()=>{};
 const popupFixture = `<!doctype html><meta charset="utf-8"><script src="/text.js"></script><script src="/quiz.js"></script><script src="/lesson.js"></script><script>
 let lastState=null;
 const send=data=>parent.routeToWorker({channel:'xxt-player-v1',page:'popup-frame',...data},77);
-setInterval(async()=>{if(parent.routeToWorker)lastState=await send({type:'REPORT',videos:[],lesson:XXTLesson.scan(),blocked:XXTQuiz.blocker(true),confirmation:!!XXTQuiz.confirmation()});},250);
+setInterval(async()=>{if(parent.routeToWorker)lastState=await send({type:'REPORT',videos:[],lesson:XXTLesson.scan(),task:XXTLesson.tasks(),blocked:XXTQuiz.blocker(true),confirmation:!!XXTQuiz.confirmation()});},250);
 window.showRichTextLesson=()=>{document.body.innerHTML='<article class="ans-cc"><h2>计算机应用</h2><p>计算机对人类的发展和社会的进步产生了极为深刻的影响，并越来越广泛地应用到人类生活的各个领域。</p><h3>科学计算</h3><p>利用计算机完成科学研究与工程技术中的数学问题计算称为科学计算，是计算机应用最早的领域。</p><div class="ans-attach-ct"><span class="ans-job-icon">任务点</span></div></article>';};
 window.showLearningGate=()=>{document.body.innerHTML='<div class="video-js"><video style="width:320px;height:180px"></video><button id="learning-gate">继续学习</button></div>';parent.fixture.gateClicks=parent.fixture.gateClicks||0;document.querySelector('#learning-gate').onclick=()=>{parent.fixture.gateClicks++;document.body.replaceChildren();};};
 window.showSubmitConfirm=()=>{document.body.innerHTML='<div style="background:#0005;position:fixed;inset:0;display:grid;place-items:center"><div style="background:white;padding:30px;border-radius:12px"><h3>提示</h3><p>确认提交？</p><div><a href="#" id="cancel">取消</a><a href="#" id="affirm"><span>提交</span></a></div></div></div>';document.querySelector('#affirm').onclick=e=>{e.preventDefault();parent.fixture.confirmations++;document.body.replaceChildren();parent.document.querySelector('#popup-frame').style.display='none';parent.finishFixtureSubmission();};};
@@ -140,6 +140,59 @@ async function main() {
   await waitFor("!!document.querySelector('#xxt-player-assistant')?.shadowRoot");
   const click = id => evaluate(`document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#${id}').click()`);
   const reason = text => `document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes(${JSON.stringify(text)})`;
+  if(process.argv.includes('--tasks-only')) {
+    await click('autoQuiz');
+    const checks=await evaluate(`(()=>{
+      const video=document.querySelector('video'),card=document.createElement('div');card.id='task-card';card.className='ans-attach-ct';video.before(card);
+      card.innerHTML='<span class="ans-job-icon" id="task-marker">任务点</span>';card.append(video);
+      const ignored=document.createElement('div');ignored.id='ignored-markers';ignored.innerHTML='<nav id="coursetree"><span class="ans-job-icon">任务点已完成</span></nav><div class="TiMu"><span class="ans-job-icon">任务点已完成</span></div><div hidden><span class="ans-job-icon">任务点已完成</span></div>';document.body.append(ignored);
+      const result=XXTLesson.tasks();ignored.remove();
+      const marker=document.querySelector('#task-marker');marker.style.cssText='display:inline-block;min-width:20px;min-height:20px';marker.textContent='';marker.title='任务点已经完成';
+      const mediaFrame=document.createElement('iframe');mediaFrame.src='/ananas/modules/video/index.html';card.append(mediaFrame);
+      const completed=XXTLesson.tasks(),completedMedia=XXTLesson.scan();mediaFrame.remove();
+      card.classList.add('ans-job-finished');marker.title='任务点未完成';const conflict=XXTLesson.tasks();
+      card.classList.remove('ans-job-finished');marker.removeAttribute('title');marker.textContent='任务点';
+      fixture.time=10;fixture.ended=true;fixture.paused=true;
+      return {total:result.total,pending:result.pending,completed:result.completed,titleCompleted:completed.completed,completedMediaPending:completedMedia.mediaPending,conflictPending:conflict.pending};
+    })()`);
+    assert.deepEqual(checks,{total:1,pending:1,completed:false,titleCompleted:true,completedMediaPending:false,conflictPending:1});
+    await click('start');await waitFor(reason('尚未完成'));await delay(6500);
+    assert.equal(await evaluate('fixture.stepClicks'),0,'an orange native task must hold an already-ended player');
+    assert.equal(await evaluate('fixture.plays'),0,'an already-ended player must not be replayed');
+    await evaluate("document.querySelector('#task-marker').textContent='任务点已完成'");
+    await waitFor(reason('任务点已完成'));
+    await evaluate("document.querySelector('#task-marker').textContent='任务点'");
+    await waitFor(reason('尚未完成'));await delay(2300);
+    assert.equal(await evaluate('fixture.stepClicks'),0,'a transient completed marker must not click practice');
+    await evaluate(`(()=>{const frame=document.querySelector('#popup-frame');frame.style.cssText='display:block;width:700px;height:260px';frame.contentWindow.showRichTextLesson();document.querySelector('#task-marker').textContent='任务点已经完成';})()`);
+    await delay(3500);assert.equal(await evaluate('fixture.stepClicks'),0,'a pending native task in another frame vetoes advancement');
+    await click('autoNext');
+    await evaluate("document.querySelector('#popup-frame').contentDocument.querySelector('.ans-attach-ct').classList.add('ans-job-finished')");
+    await waitFor(reason('自动继续已关闭'));await delay(2300);
+    assert.equal(await evaluate('fixture.stepClicks'),0);assert.equal(await evaluate('fixture.plays'),0);
+    await evaluate("(()=>{const d=document.createElement('div');d.id='task-verification';d.setAttribute('role','dialog');d.textContent='请完成验证码';document.body.append(d)})()");
+    await waitFor(reason('验证'));assert.equal(await evaluate('fixture.stepClicks'),0);
+    await evaluate("document.querySelector('#task-verification').remove()");await click('autoNext');await click('start');
+    await waitFor("fixture.step==='quiz'",16000);
+    assert.equal(await evaluate('fixture.stepClicks'),1);assert.equal(await evaluate('fixture.next'),0);assert.equal(await evaluate('fixture.apiCalls'),0);assert.equal(await evaluate('fixture.submits'),0);
+    console.log('PASS: native completed markers enter immediate practice without an ended event or replay; pending/hidden/catalog/quiz markers, transient state, opt-out and verification are handled');
+    await evaluate(`(()=>{
+      document.querySelector('#prevNextFocusNext').click();document.querySelector('#task-card').remove();
+      const frame=document.querySelector('#popup-frame');frame.contentDocument.body.replaceChildren();frame.style.display='none';
+      const video=document.querySelector('video'),card=document.createElement('div');card.id='task-card';card.className='ans-attach-ct ans-job-finished';video.before(card);card.innerHTML='<span class="ans-job-icon">任务点</span>';card.append(video);
+      fixture.time=10;fixture.ended=true;fixture.paused=true;fixture.practiceAttempts=0;fixture.catalogAttempts=0;
+      document.querySelector('#step-quiz').onclick=()=>fixture.practiceAttempts++;
+      const tree=document.createElement('div');tree.id='coursetree';tree.innerHTML='<div class="posCatalog_select posCatalog_active"><span class="posCatalog_name">当前节</span></div><div class="posCatalog_select"><span class="posCatalog_name" id="unsafe-task-catalog">下一节</span></div>';document.body.append(tree);document.querySelector('#unsafe-task-catalog').onclick=()=>fixture.catalogAttempts++;
+    })()`);
+    await click('start');await waitFor('fixture.practiceAttempts===1',16000);
+    await evaluate("(()=>{const original=Date.now;Date.now=()=>original()+16000})()");
+    await waitFor(reason('页面未确认切换'));assert.equal(await evaluate('fixture.catalogAttempts'),0);assert.equal(await evaluate('fixture.next'),1);
+    await evaluate("document.querySelector('#step-quiz').style.display='none';history.replaceState({},'','#missing-practice')");
+    await click('start');await delay(8000);
+    assert.equal(await evaluate('fixture.next'),1);assert.equal(await evaluate('fixture.catalogAttempts'),0);assert.equal(await evaluate('fixture.practiceAttempts'),1);
+    console.log('PASS: failed or missing practice tabs never fall back to skipping the chapter after native completion');
+    await command('Browser.close');return;
+  }
   if(process.argv.includes('--courses-only')) {
     assert.equal(await evaluate('store.sessions[1].courseId'),'267029719');
     assert.equal(await evaluate('store.sessions[1].running'),false);

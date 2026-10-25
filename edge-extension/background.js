@@ -51,6 +51,11 @@ function snapshot(s) {
   const lessons=result.fresh.filter(r=>r.lesson?.detected);
   const lessonPendingTasks=result.fresh.some(r=>r.lesson?.pendingTasks);
   const lessonMediaPending=result.fresh.some(r=>r.lesson?.mediaPending);
+  const tasks=result.fresh.filter(r=>r.task?.detected);
+  const taskCompleted=tasks.length>0 && tasks.every(r=>r.task.completed);
+  const taskVideoTasks=tasks.reduce((sum,r)=>sum+r.task.videoTasks,0);
+  const taskResourcePending=result.count>taskVideoTasks || result.fresh.some(r=>r.lesson?.mediaPending && (!r.lesson.mediaBlockers.length || r.lesson.mediaBlockers.some(item=>item.kind!=='video')));
+  const taskReady=taskCompleted && !result.blocked && !quizzes.length && !lessonPendingTasks && !taskResourcePending && !result.fresh.some(r=>r.lesson?.loadingImages) && Date.now()-s.changedAt>=4000;
   return { allowed: s.allowed, running: s.running, courseId:s.courseId,courseKey:s.courseKey,mode: s.mode, autoNext: s.autoNext,
     muted: s.muted, resume: s.resume, playbackRate: s.playbackRate, reason: s.reason, epoch: s.epoch,
     generation: s.generation, autoQuiz:s.autoQuiz, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard, automation:s.automation || null, quizDetected: quizzes.length > 0, quizDone,
@@ -61,9 +66,12 @@ function snapshot(s) {
     lessonPendingTasks,lessonMediaPending,lessonLoadingImages:lessons.some(r=>r.lesson.loadingImages),
     lessonMediaReasons:[...new Set(result.fresh.flatMap(r=>(r.lesson?.mediaBlockers || []).map(b=>`${r.frameId}:${b.kind}`)))].slice(0,20),
     lessonKey:lessons.map(r=>`${r.frameId}:${r.page}:${r.lesson.signature}:${r.lesson.ready}`).join('|'),
+    taskDetected:tasks.length>0,taskCompleted,taskReady,taskResourcePending,
+    taskTotal:tasks.reduce((sum,r)=>sum+r.task.total,0),taskDone:tasks.reduce((sum,r)=>sum+r.task.done,0),
+    taskKey:tasks.map(r=>`${r.frameId}:${r.page}:${r.task.signature}:${r.task.completed}`).join('|'),
     activeFrame: result.activeFrame, count: result.count,
     mediaDone: result.allDone,
-    allDone: (result.allDone || (result.count === 0 && quizDone)) && (!quizzes.length || quizDone) && Date.now() - s.changedAt >= 4000,
+    allDone: (result.allDone || (result.count === 0 && quizDone)) && (!tasks.length || taskCompleted) && (!quizzes.length || quizDone) && Date.now() - s.changedAt >= 4000,
     reports: result.fresh };
 }
 function cancelJob(tabId) {
@@ -317,6 +325,13 @@ async function handle(msg, sender) {
       note: String(msg.note || "").slice(0, 120)
     });
     const lesson=s.reports.get(sender.frameId).lesson;
+    const number=value=>Math.min(100,Math.max(0,Math.floor(Number(value)||0)));
+    const rawTask=msg.task || {};
+    const task={detected:!!rawTask.detected,total:number(rawTask.total),done:number(rawTask.done),pending:number(rawTask.pending),unknown:number(rawTask.unknown),videoTasks:number(rawTask.videoTasks),
+      evidence:(Array.isArray(rawTask.evidence)?rawTask.evidence:[]).filter(value=>['native-finished','task-label'].includes(value)).slice(0,2),signature:String(rawTask.signature || '').slice(0,80)};
+    task.detected=task.detected && task.total>0;
+    task.completed=task.detected && !!rawTask.completed && task.done===task.total && !task.pending && !task.unknown && task.evidence.length>0;
+    s.reports.get(sender.frameId).task=task;
     const kinds=['video','audio','video-frame','audio-frame','pdf-frame','ppt-frame','book-frame','pdf-object','pdf-embed','pdf-iframe','document-frame','embedded-content'];
     lesson.mediaBlockers=(Array.isArray(msg.lesson?.mediaBlockers)?msg.lesson.mediaBlockers:[]).slice(0,20).filter(item=>kinds.includes(item?.kind)).map(item=>({kind:item.kind,tag:['video','audio','object','embed','iframe'].includes(item.tag)?item.tag:''}));
     lesson.resourceCounts=Object.fromEntries(['inspected','ignoredHidden','ignoredEmpty','ignoredImages','ignoredOutside','ignoredUnclassified','ignoredCompleted'].map(key=>[key,Math.min(1000,Math.max(0,Number(msg.lesson?.resourceCounts?.[key]) || 0))]));

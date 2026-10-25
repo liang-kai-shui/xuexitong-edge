@@ -16,6 +16,7 @@
   let mouseApplied=false;
   let recentPageEvent={type:'unknown',at:-Infinity},pauseSignal='';
   let lessonSince=0,lessonKey='';
+  let taskSince=0,taskKey='';
   let panelUiCleanup=null;
   const logs = [];
   const send = data => chrome.runtime.sendMessage({ channel: "xxt-player-v1", page, ...data });
@@ -121,6 +122,7 @@
   }
   function resetPage() {
     lessonSince=0;lessonKey='';
+    taskSince=0;taskKey='';
     candidateSince = 0;
     nextAttempted = false;
     lastLocation = location.href;
@@ -147,7 +149,7 @@
     log(label + "；等待页面切换");
   }
   async function navigate() {
-    if (!state.running || !state.autoNext || aiBusy || autoPending) { candidateSince = 0;lessonSince=0;return; }
+    if (!state.running || !state.autoNext || aiBusy || autoPending) { candidateSince = 0;lessonSince=0;taskSince=0;return; }
     if (pendingNav) {
       if (Date.now() < pendingNav.until) return;
       const fallback = pendingNav.allowCatalogFallback && (!state.quizDetected || state.quizDone) && XXTNavigation.next(true);
@@ -162,6 +164,16 @@
       }
       return;
     }
+    if(state.taskDetected && !state.quizDetected) {
+      const practice=XXTNavigation.practiceStep();
+      if(state.taskReady && practice && !nextAttempted) {
+        if(taskKey!==state.taskKey || !taskSince) {taskKey=state.taskKey;taskSince=Date.now();log('检测到当前任务点已完成，确认状态后进入本节练习');}
+        if(Date.now()-taskSince>=2000)await performNavigation(practice,'任务点已完成，进入本节顶部练习',false);
+        return;
+      }
+      taskSince=0;
+      if(!state.taskCompleted || !state.taskReady) {candidateSince=0;lessonSince=0;return;}
+    } else taskSince=0;
     if (!state.count && !state.quizDetected && Date.now() - contextAt > 4000 && !nextAttempted) {
       const videoTab = XXTNavigation.videoStep();
       if (videoTab) { await performNavigation(videoTab, "进入顶部视频步骤"); return; }
@@ -194,7 +206,7 @@
       h3{font-size:15px;margin:0;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shortTitle{display:none}:host([data-minimized="true"]) .fullTitle{display:none}:host([data-minimized="true"]) .shortTitle{display:inline}
       #panelBody{padding:0 15px 15px;overflow:auto;min-height:0}#panelBody[hidden]{display:none}#minimize{margin:0;padding:2px;width:28px;height:28px;flex-shrink:0;font-size:18px;line-height:1}
       p{margin:6px 0;overflow-wrap:anywhere}button{cursor:pointer;padding:7px 11px;margin:4px 4px 4px 0;border:1px solid #bccbdc;border-radius:6px;background:#eef3fa;color:#182335}#start{background:#235de4;color:#fff}label{display:block;margin:4px 0}input{vertical-align:middle}details{margin-top:8px}pre{font:11px/1.5 monospace;max-height:130px;overflow:auto;white-space:pre-wrap}.muted{color:#627086;font-size:12px}
-      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.2</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
+      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.3</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
       <div><button id="start">开始 / 继续</button><button id="pause">暂停</button><button id="stop">停止</button></div>
       <button id="next">下一步 / 下一节</button>
       <label>播放倍速 <select id="playbackRate" aria-label="播放倍速"><option value="0">跟随播放器</option><option value="1">1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">2 倍</option></select></label>
@@ -261,8 +273,8 @@
       void tick();
     };
     root.querySelector("#copy").onclick = async () => {
-      const clean = { version: "1.7.2",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
-        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, mouseApplied, pauseSignal, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, mouseApplied, pauseSignal, confirmation, blocked, note })), logs };
+      const clean = { version: "1.7.3",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
+        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note })), logs };
       try { await navigator.clipboard.writeText(JSON.stringify(clean, null, 2)); log("诊断已复制，不含链接参数或 Cookie"); }
       catch { log("复制失败，请手动选取日志文字"); }
     };
@@ -282,6 +294,10 @@
     const resourceNames={'video':'视频','audio':'音频','video-frame':'视频页面','audio-frame':'音频页面','pdf-frame':'PDF 页面','ppt-frame':'演示文稿页面','book-frame':'电子书页面','pdf-object':'PDF 文档','pdf-embed':'PDF 文档','pdf-iframe':'PDF 页面','document-frame':'文档阅读器','embedded-content':'讲义内嵌内容'};
     const resourceText=[...new Set((state.lessonMediaReasons || []).map(reason=>resourceNames[reason.split(':').pop()] || '未分类资源'))].join('、') || '未分类资源（请刷新课程页更新识别）';
     if(state.lessonDetected && !state.quizDetected && !state.count)detail.textContent=`图文讲义约 ${state.lessonChars} 字、${state.lessonImages} 张图片。${state.lessonPendingTasks?'存在未完成任务点，等待原页面完成。':state.lessonMediaPending?`检测到仍需处理的资源：${resourceText}。`:state.lessonLoadingImages?'图片尚未加载完整。':XXTNavigation.practiceStep()?'页面稳定后进入紧接的练习页签；不会将讲义标记为已完成。':'没有紧接的练习页签，请手动选择学习步骤。'}`;
+    if(state.taskDetected && !state.quizDetected) {
+      if(state.running)status.textContent=state.taskCompleted?(state.taskReady?(state.autoNext?'当前任务点已完成，准备进入本节练习':'当前任务点已完成，自动继续已关闭'):'任务点已完成，等待资源或状态稳定'):'当前任务点尚未完成，等待平台完成标记';
+      detail.textContent+=` 当前平台任务点：${state.taskDone}/${state.taskTotal} 已完成。${state.taskCompleted&&!XXTNavigation.practiceStep()?'未找到紧接的练习页签，请手动选择。':''}`;
+    }
     const notes = (state.reports || []).map(r => r.note).filter(Boolean);
     if (notes.length) detail.textContent += " " + [...new Set(notes)].join("；");
     for (const key of ["resume", "autoNext", "muted", "autoQuiz", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
@@ -323,6 +339,7 @@
       }
       const quiz = XXTQuiz.scan();
       const lesson=XXTLesson.scan();
+      const task=XXTLesson.tasks();
       const confirm=XXTQuiz.confirmation();
       const videos = [...tracked].map(([v, info]) => {
         if (v.currentSrc && info.src !== v.currentSrc) {
@@ -339,16 +356,17 @@
         mouseApplied,
         pauseSignal,
         lesson,
+        task,
         confirmation:!!confirm,
         quiz: { detected: quiz.detected, count: quiz.count, completed: quiz.completed, evidence:quiz.evidence, total:quiz.total, unsupported:quiz.unsupported, fingerprint:quiz.fingerprint },
         note: [...tracked.values()].map(v => v.note).join("；") });
-      const wantForeground=!!(state?.allowed && state.running && state.foregroundCompat && videos.length && !state.quizDetected && !blocked);
+      const wantForeground=!!(state?.allowed && state.running && state.foregroundCompat && videos.length && !state.taskCompleted && !state.quizDetected && !blocked);
       if(wantForeground!==foregroundApplied) {
         const result=await pageAction('foreground',document.documentElement,wantForeground?'on':'off');
         if(result.ok)foregroundApplied=wantForeground;
         else log(result.error || '前台读取兼容未生效');
       }
-      const wantMouse=!!(state?.allowed && state.running && state.mouseGuard && playerSurface && state.activeFrame>=0 && !state.quizDetected && !blocked);
+      const wantMouse=!!(state?.allowed && state.running && state.mouseGuard && playerSurface && state.activeFrame>=0 && !state.taskCompleted && !state.quizDetected && !blocked);
       if(wantMouse!==mouseApplied) {
         const result=await pageAction('mouse',document.documentElement,wantMouse?'on':'off');
         if(result.ok) {mouseApplied=wantMouse;log(wantMouse?'已启用播放器鼠标离开拦截':'已恢复播放器鼠标离开事件');}
@@ -370,6 +388,7 @@
           if (!v.paused && (blocked || wasRunning || state.mode === "paused" || state.mode === "attention")) v.pause();
           continue;
         }
+        if(state.taskCompleted) {if(info.owned && !v.paused)v.pause();continue;}
         if (state.thisFrame !== state.activeFrame || eligible?.[0] !== v || info.completed) {
           if (info.owned && !v.paused) v.pause();
           continue;

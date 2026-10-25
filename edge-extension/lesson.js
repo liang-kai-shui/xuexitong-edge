@@ -12,6 +12,51 @@
     }
     return true;
   }
+  function taskState(root,icons) {
+    const labels=icons.flatMap(icon=>[icon.textContent,icon.getAttribute('title'),icon.getAttribute('aria-label')]).map(value=>(value || '').replace(/\s+/g,''));
+    const explicitPending=labels.some(value=>/^(?:任务点未完成|任务点尚未完成|未完成|待完成)$/.test(value));
+    const nativeFinished=root.classList.contains('ans-job-finished') || icons.some(icon=>icon.classList.contains('ans-job-finished'));
+    const labelFinished=labels.some(value=>/^任务点(?:已|已经)完成$/.test(value));
+    const status=explicitPending?'pending':nativeFinished||labelFinished?'completed':labels.includes('任务点')?'pending':'unknown';
+    return {status,evidence:status==='completed'?(nativeFinished?'native-finished':'task-label'):''};
+  }
+  function frameShown() {
+    try {
+      let view=window;
+      while(view!==view.top) {
+        const frame=view.frameElement;
+        if(!frame)break;
+        if(!rendered(frame))return false;
+        view=frame.ownerDocument.defaultView;
+      }
+    } catch { /* Cross-origin ancestors cannot be inspected here. */ }
+    return true;
+  }
+  function tasks() {
+    const excluded='nav,#coursetree,#xxt-player-assistant,.xxt-ai-explanation,.singleQuesId,.TiMu,[data-question-id],.question-item,[role="dialog"]';
+    const groups=new Map();
+    for(const icon of frameShown()?document.querySelectorAll('.ans-job-icon'):[]) {
+      if(!rendered(icon) || icon.closest(excluded))continue;
+      const root=icon.closest('.ans-attach-ct') || icon.parentElement;
+      if(!root || root.closest(excluded))continue;
+      if(!groups.has(root))groups.set(root,[]);
+      groups.get(root).push(icon);
+    }
+    for(const root of frameShown()?document.querySelectorAll('.ans-attach-ct.ans-job-finished'):[]) {
+      if(rendered(root) && !root.closest(excluded) && !groups.has(root) && root.querySelector('video,iframe,.ans-cc,.ans-richtext'))groups.set(root,[]);
+    }
+    const states=[];
+    for(const [root,icons] of groups) {
+      const {status,evidence}=taskState(root,icons);
+      const video=!!root.querySelector('video,iframe[src*="/ananas/modules/video/"]');
+      states.push({status,video,evidence});
+    }
+    const done=states.filter(item=>item.status==='completed').length;
+    return {detected:states.length>0,completed:states.length>0 && done===states.length,total:states.length,done,
+      pending:states.filter(item=>item.status==='pending').length,unknown:states.filter(item=>item.status==='unknown').length,
+      videoTasks:states.filter(item=>item.video).length,evidence:[...new Set(states.map(item=>item.evidence).filter(Boolean))],
+      signature:globalThis.XXTQuiz?.hash(JSON.stringify(states)) || ''};
+  }
   function resources(roots) {
     const counts={inspected:0,ignoredHidden:0,ignoredEmpty:0,ignoredImages:0,ignoredOutside:0,ignoredUnclassified:0,ignoredCompleted:0};
     const blockers=[];
@@ -24,7 +69,8 @@
       if(tag==='iframe' && !module && !pdf && el.id!=='panView')continue;
       counts.inspected++;
       const attachment=el.closest('.ans-attach-ct');
-      if(attachment?.classList.contains('ans-job-finished')) {counts.ignoredCompleted++;continue;}
+      const icons=attachment?[...attachment.querySelectorAll('.ans-job-icon')].filter(icon=>icon.closest('.ans-attach-ct')===attachment && rendered(icon)):[];
+      if(attachment && taskState(attachment,icons).status==='completed') {counts.ignoredCompleted++;continue;}
       if(!rendered(el)) {counts.ignoredHidden++;continue;}
       if(!pdf && (/^image\//.test(type) || /^data:image\//i.test(source) || /\.(?:png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i.test(path))) {counts.ignoredImages++;continue;}
       if(!['video','audio'].includes(tag) && (!source || /^(?:about:blank(?:[#?].*)?|javascript:.*)$/i.test(source))) {counts.ignoredEmpty++;continue;}
@@ -52,12 +98,13 @@
     const detected=content.length>=80 || content.length>=40 && images.length>0;
     const media=resources(roots);
     const mediaPending=media.blockers.length>0;
-    const pendingTasks=[...document.querySelectorAll('.ans-attach-ct')].some(root=>rendered(root.querySelector('.ans-job-icon')) && !root.classList.contains('ans-job-finished'));
+    const task=tasks();
+    const pendingTasks=task.detected && !task.completed;
     const loadingImages=images.some(image=>!image.complete || image.naturalWidth===0);
     const ready=detected && !mediaPending && !pendingTasks && !loadingImages;
     return {detected,ready,chars:content.length,images:images.length,pendingTasks,mediaPending,loadingImages,
       mediaBlockers:media.blockers.slice(0,20),resourceCounts:media.counts,
       signature:globalThis.XXTQuiz?.hash(JSON.stringify([content,images.map(img=>img.currentSrc || img.src),ready])) || ''};
   }
-  globalThis.XXTLesson=Object.freeze({scan});
+  globalThis.XXTLesson=Object.freeze({scan,tasks});
 })();

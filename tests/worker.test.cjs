@@ -146,6 +146,52 @@ test('lecture blocker diagnostics retain only bounded resource types and counts'
   assert.equal(lesson.resourceCounts.inspected,1000);assert.equal(lesson.resourceCounts.ignoredEmpty,0);
   assert.equal(JSON.stringify(lesson).includes('secret-query'),false);
 });
+const completedTask={detected:true,completed:true,total:1,done:1,pending:0,unknown:0,videoTasks:1,evidence:['task-label'],signature:'task-completed'};
+test('native completed task in a card frame can open practice without claiming an ended video',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});
+  await f.send({type:'REPORT',videos:[],task:completedTask},2);
+  const media={videos:[{completed:false,time:230,duration:491}],lesson:{mediaPending:true,mediaBlockers:[{kind:'video',tag:'video'}]}};
+  await f.send({type:'REPORT',...media},3);f.advance(4100);
+  let state=await f.send({type:'REPORT',...media},3);
+  assert.equal(state.taskReady,true);assert.equal(state.taskCompleted,true);assert.equal(state.mediaDone,false);assert.equal(state.allDone,false);
+  assert.equal(state.taskDone,1);assert.equal(state.taskTotal,1);
+  f.advance(1000);state=await f.send({type:'REPORT',...media},3);
+  assert.equal(state.taskReady,false,'expired native markers cannot authorize navigation');
+});
+
+test('pending or unknown native tasks veto completion even when every video ended',async()=>{
+  for(const override of [{completed:false,done:0,pending:1},{completed:true,pending:1},{completed:true,unknown:1},{completed:true,evidence:['untrusted text']}]) {
+    const f=fixture();await f.send({type:'HELLO'});
+    const report={videos:[{completed:true}],task:{...completedTask,...override}};
+    await f.send({type:'REPORT',...report},2);f.advance(4100);
+    const state=await f.send({type:'REPORT',...report},2);
+    assert.equal(state.mediaDone,true);assert.equal(state.taskCompleted,false);assert.equal(state.taskReady,false);assert.equal(state.allDone,false);
+  }
+});
+
+test('completed task navigation holds for extra resources, pending frames, quizzes and verification',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});
+  const taskReport={videos:[],task:{...completedTask,videoTasks:0}};
+  await f.send({type:'REPORT',...taskReport},2);f.advance(4100);
+  assert.equal((await f.send({type:'REPORT',...taskReport},2)).taskReady,true);
+  for(const extra of [
+    {videos:[{completed:false}]},
+    {videos:[],task:{...completedTask,completed:false,done:0,pending:1}},
+    {videos:[],lesson:{mediaPending:true,mediaBlockers:[{kind:'pdf-object',tag:'object'}]}},
+    {videos:[],lesson:{mediaPending:true,mediaBlockers:[{kind:'video-frame',tag:'iframe'}]}},
+    {videos:[],lesson:{mediaPending:true}},
+    {videos:[],lesson:{loadingImages:true}},
+    {videos:[],quiz:{detected:true,count:1}},
+    {videos:[],blocked:'请完成验证码'}
+  ]) {
+    const state=await f.send({type:'REPORT',...extra},3);
+    assert.equal(state.taskReady,false);
+    await f.send({type:'REPORT',videos:[]},3);
+  }
+  const state=await f.send({type:'REPORT',...taskReport,task:{...taskReport.task,evidence:['task-label','secret-url'],source:'secret-url'}},2);
+  assert.equal(JSON.stringify(state.reports.find(r=>r.frameId===2).task).includes('secret-url'),false);
+});
+
 test("visible verification stops every frame and preserves the reason", async () => {
   const f = fixture();
   await f.send({ type: "HELLO" });
