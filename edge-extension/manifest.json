@@ -1,67 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "通用网课助手",
-  "version": "2.0.1",
-  "description": "多平台网课自动播放、倍速、自动下一节与 AI 答题：支持超星学习通、智慧树、中国大学 MOOC、学堂在线、雨课堂、智慧职教等，也可为任意网站手动启用通用模式。",
-  "minimum_chrome_version": "116",
-  "permissions": ["storage", "scripting", "activeTab"],
-  "host_permissions": [
-    "https://api.deepseek.com/*",
-    "https://*.chaoxing.com/*",
-    "https://*.chaoxing.cn/*",
-    "https://*.xueyinonline.com/*",
-    "https://*.zhihuishu.com/*",
-    "https://*.icourse163.org/*",
-    "https://*.xuetangx.com/*",
-    "https://*.yuketang.cn/*",
-    "https://*.icve.com.cn/*",
-    "https://*.ulearning.cn/*"
-  ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
-  "background": { "service_worker": "core/background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "通用网课助手" },
+  "name": "学习通视频播放助手",
+  "version": "1.7.1",
+  "description": "学习通课程学习页的视频播放、倍速、DeepSeek 选择与简答题填写、章节测验自动提交和下一节切换。",
+  "permissions": ["storage", "scripting"],
+  "host_permissions": ["https://api.deepseek.com/*", "https://*.chaoxing.com/*"],
   "options_ui": { "page": "options.html", "open_in_tab": true },
-  "icons": {
-    "16": "assets/icon16.png",
-    "32": "assets/icon32.png",
-    "48": "assets/icon48.png",
-    "128": "assets/icon128.png"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://*.chaoxing.com/*",
-        "https://*.chaoxing.cn/*",
-        "https://*.xueyinonline.com/*",
-        "https://*.zhihuishu.com/*",
-        "https://*.icourse163.org/*",
-        "https://*.xuetangx.com/*",
-        "https://*.yuketang.cn/*",
-        "https://*.icve.com.cn/*",
-        "https://*.ulearning.cn/*"
-      ],
-      "js": [
-        "core/dom.js",
-        "core/policy.js",
-        "core/text.js",
-        "core/question-image.js",
-        "core/sites.js",
-        "core/adapters/chaoxing.js",
-        "core/adapters/zhihuishu.js",
-        "core/adapters/icourse163.js",
-        "core/adapters/xuetangx.js",
-        "core/adapters/yuketang.js",
-        "core/adapters/icve.js",
-        "core/adapters/ulearning.js",
-        "core/adapters/generic.js",
-        "core/quiz.js",
-        "core/lesson.js",
-        "core/navigation.js",
-        "core/content.js"
-      ],
-      "all_frames": true,
-      "match_about_blank": true,
-      "run_at": "document_idle"
-    }
-  ]
+  "action": { "default_title": "DeepSeek 设置" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://*.chaoxing.com/*"],
+    "js": ["policy.js", "text.js", "question-image.js", "quiz.js", "lesson.js", "navigation.js", "panel-ui.js", "content.js"],
+    "all_frames": true,
+    "match_about_blank": true,
+    "run_at": "document_idle"
+  }]
 }

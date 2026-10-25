@@ -1,14 +1,12 @@
 {
   "name": "xuexitong-edge",
-  "version": "2.0.1",
+  "version": "1.7.1",
   "private": true,
-  "description": "通用网课助手：多平台网课自动播放、自动下一节与 AI 答题的 Microsoft Edge MV3 扩展",
+  "description": "学习通课程学习页的 Microsoft Edge 本地扩展",
   "engines": { "node": ">=22" },
   "scripts": {
     "check": "node scripts/check.cjs",
-    "test": "node tests/run-tests.mjs",
-    "test:dom": "node tests/run-dom-tests.mjs",
-    "test:e2e": "node tests/run-e2e.mjs",
-    "test:browser": "node tests/run-dom-tests.mjs && node tests/run-e2e.mjs"
+    "test": "node --test tests/worker.test.cjs tests/text.test.cjs",
+    "test:browser": "node tests/browser-smoke.cjs"
   }
 }
