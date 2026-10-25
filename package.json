@@ -1,6 +1,6 @@
 {
   "name": "xuexitong-edge",
-  "version": "1.7.4",
+  "version": "1.7.8",
   "private": true,
   "description": "学习通课程学习页的 Microsoft Edge 本地扩展",
   "engines": { "node": ">=22" },

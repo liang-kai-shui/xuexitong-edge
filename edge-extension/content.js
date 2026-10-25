@@ -5,6 +5,10 @@
   const topFrame = window === window.top;
   if (topFrame && !XXTPolicy.coursePage(location.href)) return;
   const page = crypto.randomUUID();
+  // Read the browser state even when the experimental main-world compatibility
+  // option overrides properties on document. Hidden pauses are not play errors.
+  const nativeVisibility=Object.getOwnPropertyDescriptor(Document.prototype,'visibilityState')?.get;
+  const pageVisibility=()=>{try {const value=nativeVisibility?nativeVisibility.call(document):document.visibilityState;return ['visible','hidden'].includes(value)?value:'unknown';}catch{return 'unknown';}};
   const tracked = new Map();
   let seq = 0, state = null, busy = false, panel, status, detail, logBox;
   let candidateSince = 0, nextAttempted = false, lastLocation = location.href;
@@ -22,7 +26,7 @@
   const send = data => chrome.runtime.sendMessage({ channel: "xxt-player-v1", page, ...data });
   const notePageEvent=type=>{recentPageEvent={type,at:performance.now()};};
   window.addEventListener('blur',()=>notePageEvent('window-blur'),true);
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')notePageEvent('document-hidden');},true);
+  document.addEventListener('visibilitychange',()=>{if(pageVisibility()==='hidden')notePageEvent('document-hidden');void tick();},true);
   for(const type of ['mouseout','mouseleave','pointerout','pointerleave'])window.addEventListener(type,event=>{if(event.relatedTarget===null)notePageEvent('viewport-exit');},true);
   function log(text) {
     if (logs.at(-1)?.text === text) return;
@@ -59,7 +63,7 @@
     for (const v of document.querySelectorAll("video")) {
       if (tracked.has(v)) continue;
       const info = { id: ++seq, completed: false, lastTry: 0, attempts: [], pending: false,
-        src: v.currentSrc, lastTime: v.currentTime, progressed: false, seenPlaying: !v.paused && !v.ended, manual: false, owned: false, note: "等待播放" };
+        src: v.currentSrc, lastTime: v.currentTime, progressed: false, seenPlaying: !v.paused && !v.ended, manual: false, owned: false, waitingForVisible:false, note: "等待播放" };
       tracked.set(v, info);
       v.addEventListener("timeupdate", () => {
         const now = v.currentTime;
@@ -75,14 +79,18 @@
         }
       });
       v.addEventListener("pause", () => {
-        if(state?.running && !v.ended)pauseSignal=performance.now()-lastUserInput<600?'manual':performance.now()-recentPageEvent.at<1500?recentPageEvent.type:'unknown';
+        if(state?.running && !v.ended) {
+          pauseSignal=performance.now()-lastUserInput<600?'manual':pageVisibility()==='hidden'?'document-hidden':performance.now()-recentPageEvent.at<1500?recentPageEvent.type:'unknown';
+          info.note='视频已暂停';
+          void tick();
+        }
         if (state?.running && !v.ended && performance.now() - lastUserInput < 600) {
           info.manual = true;
           info.note = "已手动暂停；点击助手开始继续";
           void send({ type: "ATTENTION", reason: info.note });
         }
       });
-      v.addEventListener("playing", () => { info.seenPlaying = true; info.note = "播放中"; });
+      v.addEventListener("playing", () => { info.seenPlaying = true; info.waitingForVisible=false; info.note = "播放中"; });
       v.addEventListener("error", () => { info.note = "视频加载错误，请检查网络后重试"; });
     }
   }
@@ -95,6 +103,9 @@
     if (e.isTrusted && [" ", "k", "K", "MediaPlayPause"].includes(e.key)) lastUserInput = performance.now();
   }, true);
   async function play(v, info) {
+    if(pageVisibility()==='hidden') {
+      info.waitingForVisible=true;info.note='后台暂停，等待窗口恢复可见';return;
+    }
     if (info.pending || performance.now() - info.lastTry < 2200) return;
     const now = Date.now();
     info.attempts = info.attempts.filter(t => now - t < 60000);
@@ -206,7 +217,7 @@
       h3{font-size:15px;margin:0;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shortTitle{display:none}:host([data-minimized="true"]) .fullTitle{display:none}:host([data-minimized="true"]) .shortTitle{display:inline}
       #panelBody{padding:0 15px 15px;overflow:auto;min-height:0}#panelBody[hidden]{display:none}#minimize{margin:0;padding:2px;width:28px;height:28px;flex-shrink:0;font-size:18px;line-height:1}
       p{margin:6px 0;overflow-wrap:anywhere}button{cursor:pointer;padding:7px 11px;margin:4px 4px 4px 0;border:1px solid #bccbdc;border-radius:6px;background:#eef3fa;color:#182335}#start{background:#235de4;color:#fff}label{display:block;margin:4px 0}input{vertical-align:middle}details{margin-top:8px}pre{font:11px/1.5 monospace;max-height:130px;overflow:auto;white-space:pre-wrap}.muted{color:#627086;font-size:12px}
-      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.4</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
+      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.8</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
       <div><button id="start">开始 / 继续</button><button id="pause">暂停</button><button id="stop">停止</button></div>
       <button id="next">下一步 / 下一节</button>
       <label>播放倍速 <select id="playbackRate" aria-label="播放倍速"><option value="0">跟随播放器</option><option value="1">1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">2 倍</option></select></label>
@@ -274,8 +285,8 @@
       void tick();
     };
     root.querySelector("#copy").onclick = async () => {
-      const clean = { version: "1.7.4",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz,randomFallback:state?.randomFallback, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
-        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, confirmation, blocked, note })), logs };
+      const clean = { version: "1.7.8",courseId:state?.courseId, incognito:state?.incognito, running: state?.running, autoQuiz:state?.autoQuiz,randomFallback:state?.randomFallback, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
+        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, blocked, note })), logs };
       try { await navigator.clipboard.writeText(JSON.stringify(clean, null, 2)); log("诊断已复制，不含链接参数或 Cookie"); }
       catch { log("复制失败，请手动选取日志文字"); }
     };
@@ -300,6 +311,7 @@
       detail.textContent+=` 当前平台任务点：${state.taskDone}/${state.taskTotal} 已完成。${state.taskCompleted&&!XXTNavigation.practiceStep()?'未找到紧接的练习页签，请手动选择。':''}`;
     }
     if(state.automation?.randomCount)detail.textContent+=` 本次含 ${state.automation.randomCount} 道随机兜底，可能错误。`;
+    if(state.running && state.waitingForVisible && !state.quizDetected)status.textContent=state.resume?'页面在后台且视频已暂停；恢复窗口后继续':'页面在后台且视频已暂停；自动续播已关闭';
     const notes = (state.reports || []).map(r => r.note).filter(Boolean);
     if (notes.length) detail.textContent += " " + [...new Set(notes)].join("；");
     for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
@@ -348,19 +360,23 @@
           info.src = v.currentSrc; info.completed = false; info.progressed = false; info.seenPlaying = !v.paused && !v.ended;
           info.lastTime = v.currentTime; info.attempts = []; nextAttempted = false;
         }
+        info.waitingForVisible=!!(state?.running && v.paused && !v.ended && !info.completed && !info.manual && pageVisibility()==='hidden');
+        if(info.waitingForVisible)info.note='后台暂停，等待窗口恢复可见';
+        else if(info.note==='后台暂停，等待窗口恢复可见')info.note=v.paused?'视频已暂停':'播放中';
         return { id: info.id, time: Number.isFinite(v.currentTime) ? v.currentTime : 0,
           duration: Number.isFinite(v.duration) ? v.duration : 0, completed: info.completed, paused: v.paused,
-          playbackRate: v.playbackRate };
+          playbackRate: v.playbackRate,waitingForVisible:info.waitingForVisible,resumeAttempts:info.attempts.length };
       });
       const playerSurface=videos.length>0 || !!document.querySelector('iframe[src*="/ananas/modules/video/"],iframe[src*="/knowledge/cards"]');
       state = await send({ type: "REPORT", generation: state?.generation, videos, blocked,
         playerSurface,
         mouseApplied,
         pauseSignal,
+        visibility:pageVisibility(),
         lesson,
         task,
         confirmation:!!confirm,
-        quiz: { detected: quiz.detected, count: quiz.count, completed: quiz.completed, evidence:quiz.evidence, total:quiz.total, unsupported:quiz.unsupported, fingerprint:quiz.fingerprint },
+        quiz: { detected: quiz.detected, count: quiz.count, completed: quiz.completed, evidence:quiz.evidence, total:quiz.total, unsupported:quiz.unsupported, unsupportedDetails:quiz.unsupportedDetails, fingerprint:quiz.fingerprint },
         note: [...tracked.values()].map(v => v.note).join("；") });
       const wantForeground=!!(state?.allowed && state.running && state.foregroundCompat && videos.length && !state.taskCompleted && !state.quizDetected && !blocked);
       if(wantForeground!==foregroundApplied) {

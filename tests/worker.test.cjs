@@ -23,7 +23,7 @@ function fixture(initialStore = {}, options = {}) {
   });
   vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), context);
   const send = (msg, frameId = 0, tab = 1, url = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid=212800861") =>
-    new Promise(resolve => listener({ channel: "xxt-player-v1", page: "top", ...msg }, { tab: { id: tab }, frameId, url }, resolve));
+    new Promise(resolve => listener({ channel: "xxt-player-v1", page: "top", ...msg }, { tab: { id: tab,incognito:options.incognitoTabs?.includes(tab)===true }, frameId, url }, resolve));
   const sendOptions = msg => new Promise(resolve => listener({ channel: 'xxt-player-v1', ...msg }, { url: 'chrome-extension://test/options.html' }, resolve));
   return { send, sendOptions, context, store, local, removed: id => removed(id), advance: ms => { time += ms; } };
 }
@@ -70,6 +70,71 @@ test('upgrade restores at most one previously running course tab',async()=>{
   assert.equal((await f.send({type:'HELLO'})).running,true);
   const second=await f.send({type:'HELLO'},0,2);
   assert.equal(second.running,false);assert.match(second.reason,/恢复.*其他课程标签页/);
+});
+
+test('hidden playback wait requires fresh hidden and paused evidence with bounded visibility diagnostics',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});
+  const report=extra=>f.send({type:'REPORT',videos:[{paused:true,completed:false,waitingForVisible:true}],visibility:'hidden',...extra},2);
+  let s=await report();assert.equal(s.running,true);assert.equal(s.waitingForVisible,true);assert.equal(s.reports[0].visibility,'hidden');
+  s=await report({visibility:'visible'});assert.equal(s.waitingForVisible,false);
+  s=await report({visibility:'private untrusted value'});assert.equal(s.waitingForVisible,false);assert.equal(s.reports[0].visibility,'unknown');
+  s=await report({videos:[{paused:false,waitingForVisible:true}]});assert.equal(s.waitingForVisible,false);
+  s=await report({videos:[{paused:true,waitingForVisible:'true'}]});assert.equal(s.waitingForVisible,false);
+  await report();f.advance(6000);s=await f.send({type:'REPORT',videos:[]});assert.equal(s.waitingForVisible,false);
+});
+
+test('normal and InPrivate may each run one tab; page-supplied context cannot evade the guard',async()=>{
+  const f=fixture({}, {incognitoTabs:[2,4]});
+  for(const tab of [1,2,3,4])await f.send({type:'HELLO'},0,tab);
+  assert.equal((await f.send({type:'CONTROL',action:'start'})).running,true);
+  const privateState=await f.send({type:'CONTROL',action:'start'},0,2);
+  assert.equal(privateState.running,true);assert.equal(privateState.incognito,true);
+  const normalConflict=await f.send({type:'CONTROL',action:'start',incognito:true},0,3);
+  assert.equal(normalConflict.running,false);assert.equal(normalConflict.incognito,false);assert.match(normalConflict.reason,/普通环境/);
+  const privateConflict=await f.send({type:'CONTROL',action:'start',incognito:false},0,4);
+  assert.equal(privateConflict.running,false);assert.equal(privateConflict.incognito,true);assert.match(privateConflict.reason,/InPrivate环境/);
+  assert.equal((await f.send({type:'REPORT',videos:[]})).running,true);
+  assert.equal((await f.send({type:'REPORT',videos:[]},0,2)).running,true);
+});
+
+test('pause and close release only their context; settings and reports stay within each tab',async()=>{
+  const f=fixture({}, {incognitoTabs:[2,4]});
+  for(const tab of [1,2,3,4])await f.send({type:'HELLO'},0,tab);
+  await f.send({type:'CONTROL',action:'start',playbackRate:2,randomFallback:false});
+  await f.send({type:'CONTROL',action:'start',playbackRate:1.25},0,2);
+  await f.send({type:'REPORT',page:'private-player',videos:[{currentTime:7,duration:10}]},2,2);
+  const normal=await f.send({type:'REPORT',videos:[]});
+  assert.equal(normal.reports.some(r=>r.page==='private-player'),false);assert.equal(normal.randomFallback,false);assert.equal(normal.playbackRate,2);
+  await f.send({type:'CONTROL',action:'pause'});
+  const privateState=await f.send({type:'REPORT',videos:[]},0,2);
+  assert.equal(privateState.running,true);assert.equal(privateState.randomFallback,true);assert.equal(privateState.playbackRate,1.25);
+  assert.equal((await f.send({type:'CONTROL',action:'start'},0,3)).running,true);
+  assert.equal((await f.send({type:'CONTROL',action:'start'},0,4)).running,false);
+  f.removed(2);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await f.send({type:'CONTROL',action:'start'},0,4)).running,true);
+  assert.equal((await f.send({type:'REPORT',videos:[]},0,3)).running,true);
+});
+
+test('worker restart restores at most one running tab per browser context',async()=>{
+  const state={sessions:{1:{allowed:true,running:true,page:'top',incognito:false},2:{allowed:true,running:true,page:'top',incognito:true},3:{allowed:true,running:true,page:'top',incognito:false},4:{allowed:true,running:true,page:'top',incognito:true}}};
+  const f=fixture(state,{incognitoTabs:[2,4]});
+  assert.equal((await f.send({type:'HELLO'})).running,true);
+  assert.equal((await f.send({type:'HELLO'},0,2)).running,true);
+  assert.equal((await f.send({type:'HELLO'},0,3)).running,false);
+  assert.equal((await f.send({type:'HELLO'},0,4)).running,false);
+  assert.equal(f.store.sessions[2].incognito,true);
+  const restored=fixture(f.store,{incognitoTabs:[2,4]});
+  assert.equal((await restored.send({type:'HELLO'})).running,true);
+  assert.equal((await restored.send({type:'HELLO'},0,2)).running,true);
+});
+
+test('legacy InPrivate session is classified from the browser sender rather than page data',async()=>{
+  const f=fixture({sessions:{2:{allowed:true,running:false,page:'top',courseId:'212800861',courseKey:'212800861:'}}},{incognitoTabs:[2]});
+  const state=await f.send({type:'HELLO',incognito:false},0,2);
+  assert.equal(state.incognito,true);assert.equal(state.running,false);
+  assert.equal(f.store.sessions[2].incognito,true,'classification persists even without page or course changes');
+  await f.send({type:'CONTROL',action:'start'},0,2);
+  assert.equal(f.store.sessions[2].incognito,true);
 });
 
 test("playback rate defaults to following the player, validates choices and reaches child frames", async () => {
@@ -307,6 +372,18 @@ test('ordinary CJK codepoints with an encrypted-font flag are never sent as plai
   assert.throws(()=>api.questions([{id:'q1',type:'short',stem:'简懿指攋与懻序的悬别',options:[],encrypted:true}]),/混淆字体/);
 });
 
+test('image-only questions without encrypted fonts must be visually transcribed before solving',async()=>{
+  let calls=0;
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+    calls++;const body=JSON.parse(request.body);assert.ok(Array.isArray(body.messages[1].content));
+    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({id:'q1',readable:true,stem:'递归计算 f(n)=n*f(n-1), f(0)=1。',options:[]})}}]})};
+  }});
+  const input=[{id:'q1',type:'short',stem:'[图片题，等待视觉转录]',options:[],visual:true,image:'data:image/png;base64,AAAA'}],api=f.context.XXTDeepSeek;
+  assert.throws(()=>api.questions(input),/图片题/);
+  const prepared=await api.prepare(input,new AbortController().signal);
+  assert.equal(calls,1);assert.match(prepared[0].stem,/f\(0\)=1/);assert.equal(Object.hasOwn(prepared[0],'visual'),false);assert.equal(Object.hasOwn(prepared[0],'image'),false);
+});
+
 test('visual transcription excludes encrypted DOM text and answering uses high thinking',async()=>{
   const requests=[];
   const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential',model:'deepseek-v4-pro'}},fetch:async(url,request)=>{
@@ -535,6 +612,51 @@ test('pause during an API request prevents subsequent fill and submit',async()=>
   const pending=f.send({type:'AUTO_QUIZ'});await fetching;
   await f.send({type:'CONTROL',action:'pause'});release();await pending;
   assert.equal(counts.apply,0);assert.equal(counts.submit,0);
+});
+
+test('unsupported question reports identify the question using bounded diagnostic fields only',async()=>{
+  const {f,counts}=automaticFixture();await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});
+  const response=await f.send({type:'REPORT',page:'quiz',videos:[],quiz:{detected:true,count:9,total:10,unsupported:1,fingerprint:'structure-failure',unsupportedDetails:[
+    {id:'q10',code:'missing-answer-control',optionCount:0,stem:'private question text'},
+    {id:'private-id',code:'missing-answer-control'},
+    {id:'q2',code:'private reason'}
+  ]}},2);
+  const details=response.reports.find(r=>r.frameId===2).quiz.unsupportedDetails;
+  assert.deepEqual(JSON.parse(JSON.stringify(details)),[{id:'q10',code:'missing-answer-control',optionCount:0}]);
+  const result=await f.send({type:'AUTO_QUIZ'});
+  assert.match(result.error,/q10/);assert.equal(result.automation.diagnostic.phase,'question-structure');
+  assert.equal(JSON.stringify(result).includes('private question text'),false);
+  assert.equal(counts.api,0);assert.equal(counts.submit,0);
+});
+
+test('concurrent normal and InPrivate model jobs remain independent when one tab pauses',async()=>{
+  const requests=[],applied=[];
+  const f=fixture({}, {incognitoTabs:[2],local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},
+    fetch:async(url,request)=>new Promise((resolve,reject)=>{
+      const question=JSON.parse(request.body).messages[1];const q=JSON.parse(question.content).questions[0];
+      let done=false;
+      const abort=()=>{if(done)return;done=true;reject(new DOMException('cancelled','AbortError'));};
+      request.signal.addEventListener('abort',abort,{once:true});
+      requests.push({tab:Number(q.stem.split('-')[1]),signal:request.signal,finish(){if(done)return;done=true;request.signal.removeEventListener('abort',abort);resolve({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({answers:[{id:'q1',answer:['B']}]})}}]})});}});
+    }),
+    onTabMessage:async(tab,msg)=>{
+      if(msg.type==='QUIZ_READ')return {page:'quiz',fingerprint:'same-ids',questions:[{id:'q1',type:'single',stem:'tab-'+tab,options:[{key:'A',text:'one'},{key:'B',text:'two'}]}],total:1,unsupported:0};
+      if(msg.type==='QUIZ_APPLY'){applied.push({tab,answers:msg.answers});return {applied:1,total:1,unsupported:0,failed:[]};}
+    }});
+  for(const tab of [1,2]){
+    await f.send({type:'HELLO'},0,tab);assert.equal((await f.send({type:'CONTROL',action:'start'},0,tab)).running,true);
+    await f.send({type:'REPORT',page:'quiz',videos:[],quiz:{detected:true,count:1,total:1,unsupported:0,fingerprint:'same-ids'}},2,tab);
+  }
+  const normalJob=f.send({type:'AI_SOLVE'}),privateJob=f.send({type:'AI_SOLVE'},0,2);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,2);
+  await f.send({type:'CONTROL',action:'pause'});
+  assert.ok((await normalJob).error);assert.equal(requests.find(r=>r.tab===1).signal.aborted,true);
+  const privateRequest=requests.find(r=>r.tab===2);assert.equal(privateRequest.signal.aborted,false);privateRequest.finish();
+  assert.equal((await privateJob).result.answers[0].answer[0],'B');
+  assert.ok((await f.send({type:'AI_APPLY'})).error);
+  assert.equal((await f.send({type:'AI_APPLY'},0,2)).applied,1);
+  assert.equal(applied.length,1);assert.equal(applied[0].tab,2);
+  assert.equal((await f.send({type:'REPORT',videos:[]},0,2)).running,true);
 });
 test('a submitted quiz times out without retrying the submit action',async()=>{
   const {f,counts,report}=automaticFixture();await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});await report();await f.send({type:'AUTO_QUIZ'});

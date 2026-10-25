@@ -24,6 +24,10 @@ const fixture = `<!doctype html><meta charset="utf-8"><title>Local playback test
 <iframe id="popup-frame" src="/popup-frame" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;border:0"></iframe>
 <script>
 window.fixture={courseId:'267029719',plays:0,next:0,paused:true,ended:false,time:0,step:'video',stepClicks:0,submits:0,apiCalls:0,synced:0,confirmations:0,useConfirmation:false,phases:[]};
+if(${process.argv.includes('--visibility-only')}) {
+  fixture.visibility='visible';
+  Object.defineProperty(Document.prototype,'visibilityState',{configurable:true,get:()=>fixture.visibility});
+}
 let v=document.querySelector('video');
 function installVideo(video){
 v=video;fixture.paused=true;fixture.ended=false;fixture.time=0;
@@ -83,6 +87,7 @@ return XXTQuiz.confirmPending(async(kind,target,text)=>{const token=crypto.rando
 };
 </script>`;
 const server = http.createServer((req, res) => {
+  if(req.url?.startsWith('/question-image.svg')) {res.setHeader('content-type','image/svg+xml');return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="500" height="100"><rect width="500" height="100" fill="white"/><text x="12" y="60" font-size="30" fill="blue">f(n)=n*f(n-1), f(0)=1</text></svg>');}
   if(req.url?.startsWith('/visible-resource.pdf')) {res.setHeader('content-type','application/pdf');return res.end(makePdfFixture());}
   if (req.url === "/") { res.setHeader("content-type", "text/html; charset=utf-8"); return res.end(fixture); }
   if (req.url === '/popup-frame') {res.setHeader('content-type','text/html; charset=utf-8');return res.end(popupFixture);}
@@ -127,6 +132,10 @@ async function main() {
   });
   const { targetId } = await command("Target.createTarget", { url: local });
   const { sessionId } = await command("Target.attachToTarget", { targetId, flatten: true });
+  // The general workflow tests assume a visible tab. Headless Edge can mark
+  // it hidden after editor focus changes; lifecycle transitions are covered
+  // separately by --visibility-only rather than depending on desktop focus.
+  if(!process.argv.includes('--visibility-only'))await command('Emulation.setFocusEmulationEnabled',{enabled:true},sessionId);
   const evaluate = async expression => {
     const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
@@ -140,6 +149,121 @@ async function main() {
   await waitFor("!!document.querySelector('#xxt-player-assistant')?.shadowRoot");
   const click = id => evaluate(`document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#${id}').click()`);
   const reason = text => `document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes(${JSON.stringify(text)})`;
+  if(process.argv.includes('--image-only')) {
+    await click('autoNext');
+    await evaluate(`(()=>{
+      showQuiz();[...document.querySelectorAll('.singleQuesId')].slice(1,5).forEach(q=>q.remove());
+      const title=document.querySelector('#short-question .fontLabel');title.textContent='[其它] 用递归方法，求如下函数';title.classList.add('font-cxsecret');
+      const img=document.createElement('img');img.id='formula';img.alt='fmal2.jpg';img.src='/missing-formula?token=private-resource-token';title.append(document.createElement('br'),img);
+    })()`);
+    await waitFor("document.querySelector('#formula').complete");
+    const broken=await evaluate('XXTQuiz.scan().fingerprint');
+    await click('start');await waitFor(reason('q2'));
+    assert.equal(await evaluate('fixture.apiCalls'),0);assert.equal(await evaluate('fixture.submits'),0);
+    assert.equal(await evaluate("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes('图片未加载')"),true);
+    await evaluate("document.querySelector('#formula').src=location.origin.replace('127.0.0.1','localhost')+'/question-image.svg?token=private-resource-token'");
+    await waitFor("document.querySelector('#formula').complete && document.querySelector('#formula').naturalWidth>0");
+    const blocked=await evaluate("XXTQuiz.read().then(()=>'',e=>e.message)");
+    assert.match(blocked,/q2.*跨域/);assert.equal(blocked.includes('private-resource-token'),false);
+    await evaluate("document.querySelector('#formula').src='/question-image.svg?token=private-resource-token'");
+    await waitFor("document.querySelector('#formula').complete && document.querySelector('#formula').naturalWidth>0");
+    assert.notEqual(await evaluate('XXTQuiz.scan().fingerprint'),broken);
+    const pixels=await evaluate(`(async()=>{const q=(await XXTQuiz.read()).questions.find(q=>q.id==='q2'),img=new Image();img.src=q.image;await img.decode();const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);const data=ctx.getImageData(0,0,c.width,c.height).data;let blue=0;for(let i=0;i<data.length;i+=4)if(data[i+2]>180 && data[i]<80 && data[i+1]<80)blue++;return blue;})()`);
+    assert.ok(pixels>30,'the generated PNG must include the formula image pixels');
+    await evaluate("(()=>{const img=document.querySelector('#formula'),title=img.parentElement;title.classList.remove('font-cxsecret');title.replaceChildren(img);})()");
+    assert.equal(await evaluate("XXTQuiz.scan().questions.find(q=>q.id==='q2').visual"),true,'image-only questions without encrypted fonts still require vision');
+    await evaluate(`(()=>{const base=window.fetch;fixture.visionCalls=0;fixture.answerCalls=0;window.fetch=async(url,options)=>{
+      if(url!=='https://api.deepseek.com/chat/completions')return base(url,options);
+      fixture.apiCalls++;const body=JSON.parse(options.body),visual=Array.isArray(body.messages[1].content);
+      if(JSON.stringify(body).includes('private-resource-token'))throw new Error('image URL leaked');
+      let payload;
+      if(visual){fixture.visionCalls++;payload={id:'q2',readable:true,stem:'用递归方法求 f(n)=n*f(n-1), f(0)=1。',options:[]};}
+      else {fixture.answerCalls++;const qs=JSON.parse(body.messages[1].content).questions;fixture.sentQuestions=qs;payload={answers:qs.map(q=>({id:q.id,answer:q.type==='short'?['int f(int n) { return n == 0 ? 1 : n * f(n - 1); }']:['A']}))};}
+      return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(payload)}}]}),{status:200});
+    };})()`);
+    await click('start');await waitFor('fixture.submits===1',18000);
+    assert.equal(await evaluate('fixture.visionCalls'),1);assert.equal(await evaluate('fixture.answerCalls'),1);
+    assert.equal(await evaluate("fixture.sentQuestions.find(q=>q.id==='q2').stem.includes('f(0)=1')"),true);
+    assert.equal(await evaluate("fixture.lastSubmittedText.includes('n * f(n - 1)')"),true);
+    console.log('PASS: broken q2 image stops before API calls; cross-origin images report q2 without URLs; loaded formula pixels reach vision and the transcribed image-only short answer is synced and submitted');
+    await command('Browser.close');return;
+  }
+  if(process.argv.includes('--visibility-only')) {
+    await click('autoNext');await click('start');await waitFor('fixture.plays>=1');
+    await click('foregroundCompat');await waitFor("Object.hasOwn(document,'visibilityState')");
+    const started=await evaluate('fixture.plays');
+    await evaluate("fixture.visibility='hidden';document.dispatchEvent(new Event('visibilitychange'))");await delay(1300);
+    assert.equal(await evaluate('fixture.paused'),false,'hidden playback that is still progressing must not be paused by the controller');
+    await evaluate("document.querySelector('video').pause()");
+    await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes('后台')");
+    const attempts=await evaluate("(async()=>{const s=await routeToWorker({channel:'xxt-player-v1',type:'HELLO',page:store.sessions[1].page});return s.reports.find(r=>r.frameId===0).videos[0].resumeAttempts;})()");
+    assert.equal(await evaluate('document.visibilityState'),'visible','compatibility overrides do not hide the real lifecycle state from the controller');
+    await delay(20000);
+    assert.equal(await evaluate('fixture.plays'),started,'hidden pauses must not consume repeated play calls');
+    const hidden=await evaluate("routeToWorker({channel:'xxt-player-v1',type:'HELLO',page:store.sessions[1].page})");
+    assert.equal(hidden.running,true);assert.equal(hidden.waitingForVisible,true);
+    const report=hidden.reports.find(r=>r.frameId===0);assert.equal(report.visibility,'hidden');assert.equal(report.pauseSignal,'document-hidden');assert.equal(report.videos[0].resumeAttempts,attempts);
+    await evaluate("fixture.visibility='visible';document.dispatchEvent(new Event('visibilitychange'))");
+    await waitFor('fixture.plays>'+started);assert.equal(await evaluate('fixture.paused'),false);
+    await click('resume');
+    const noResume=await evaluate('fixture.plays');
+    await evaluate("fixture.visibility='hidden';document.dispatchEvent(new Event('visibilitychange'));document.querySelector('video').pause()");await delay(1200);
+    await evaluate("fixture.visibility='visible';document.dispatchEvent(new Event('visibilitychange'))");await delay(2300);
+    assert.equal(await evaluate('fixture.plays'),noResume,'resume-disabled remains respected after restoring visibility');
+    await click('resume');await waitFor('fixture.plays>'+noResume);
+    await click('pause');await waitFor('fixture.paused');const paused=await evaluate('fixture.plays');
+    await evaluate("fixture.visibility='hidden';document.dispatchEvent(new Event('visibilitychange'));fixture.visibility='visible';document.dispatchEvent(new Event('visibilitychange'))");await delay(1200);
+    assert.equal(await evaluate('fixture.plays'),paused,'an explicit pause cannot be undone by restoring visibility');
+    await click('start');await waitFor('!fixture.paused');
+    await evaluate("fixture.visibility='hidden';document.dispatchEvent(new Event('visibilitychange'));document.querySelector('video').pause();const el=document.createElement('div');el.id='captcha';el.textContent='安全验证';document.body.append(el)");
+    await waitFor(reason('验证'));assert.equal(await evaluate('store.sessions[1].running'),false);
+    await evaluate("document.querySelector('#captcha').remove();fixture.visibility='visible';document.dispatchEvent(new Event('visibilitychange'))");
+    await click('start');await waitFor('!fixture.paused');
+    // Advance only the mock clock: real page logic still enforces the original
+    // visible-page retry cap, independently of the hidden waiting path.
+    await evaluate("fixture.clock=0;const realNow=performance.now.bind(performance),realDateNow=Date.now.bind(Date);Object.defineProperty(performance,'now',{configurable:true,value:()=>realNow()+fixture.clock});Date.now=()=>realDateNow()+fixture.clock");
+    for(let i=0;i<5;i++) {
+      const plays=await evaluate('fixture.plays');
+      await evaluate("fixture.clock+=4000;document.querySelector('video').pause()");await waitFor('fixture.plays>'+plays);
+    }
+    await evaluate("fixture.clock+=4000;document.querySelector('video').pause()");await waitFor(reason('反复暂停'));
+    assert.equal(await evaluate('store.sessions[1].running'),false);assert.equal(await evaluate('fixture.apiCalls'),0);
+    console.log('PASS: hidden pause waits without retries, restores playback when visible, respects disabled resume/manual pause/verification, and retains the visible-page retry cap');
+    await command('Browser.close');return;
+  }
+  if(process.argv.includes('--question-types-only')) {
+    await click('autoNext');
+    await evaluate(`(()=>{
+      showQuiz();
+      const wrap=document.querySelector('#quiz'),first=wrap.querySelector('.singleQuesId'),short=document.querySelector('#short-question');
+      // Match the report: eight choices, followed by two "other" UEditor answers.
+      for(let i=0;i<3;i++)wrap.insertBefore(first.cloneNode(true),short);
+      short.querySelector('.fontLabel').textContent='9 [其它] 将一个数组的值按逆序重新存放，例如原来顺序为 8、6、5、4、1，要求改为 1、4、5、6、8。';
+      const second=short.cloneNode(true);second.id='second-short-question';
+      second.querySelector('.fontLabel').textContent='10 [其它] 一个已按从小到大的顺序排好的数组，今输入一个数要求按原来排序的规律将它插入数组中。（假设数组有10元素）';
+      fixture.sortingQuestion=second.querySelector('.fontLabel').textContent;
+      second.querySelector('iframe').id='ueditor_5';second.querySelector('textarea').id='answerEditor5';
+      wrap.insertBefore(second,document.querySelector('#submit'));
+      const frame=second.querySelector('iframe');frame.contentDocument.body.contentEditable='true';
+      UE.instants.secondEditor={container:second.querySelector('.edui-editor'),iframe:frame,textarea:second.querySelector('textarea'),setContent(html){frame.contentDocument.body.innerHTML=html;},sync(){second.querySelector('textarea').value=frame.contentDocument.body.innerHTML;fixture.synced++;},getContentTxt(){return frame.contentDocument.body.textContent;},fireEvent(){},blur(){frame.contentDocument.body.blur();}};
+      wrap.querySelectorAll('li').forEach(el=>el.onclick=()=>{const old=el.getAttribute('aria-checked')==='true';if(el.getAttribute('role')==='radio')el.parentElement.querySelectorAll('li').forEach(o=>o.setAttribute('aria-checked','false'));el.setAttribute('aria-checked',String(el.getAttribute('role')==='radio'||!old));});
+      const submit=document.querySelector('#submit'),original=submit.onclick;
+      submit.onclick=()=>{fixture.extraSubmittedText=second.querySelector('textarea').value;original();};
+    })()`);
+    assert.deepEqual(await evaluate('(()=>{const s=XXTQuiz.scan();return {total:s.total,count:s.count,unsupported:s.unsupported,shortIds:s.questions.filter(q=>q.type===\'short\').map(q=>q.id)};})()'),{total:10,count:10,unsupported:0,shortIds:['q9','q10']});
+    for(const word of ['排序','编程','填空','上传','连线']) {
+      await evaluate(`document.querySelector('#second-short-question .fontLabel').textContent=${JSON.stringify('[其它] 请说明'+word+'的操作过程')}`);
+      assert.equal(await evaluate("XXTQuiz.scan().questions.find(q=>q.id==='q10')?.type"),'short');
+    }
+    await evaluate("document.querySelector('#second-short-question .fontLabel').textContent=fixture.sortingQuestion");
+    const unknown=await evaluate(`(()=>{const root=document.createElement('div');root.className='singleQuesId';root.innerHTML='<h3>排序题：将元素排序</h3>';document.querySelector('#quiz').append(root);const s=XXTQuiz.scan();root.remove();return {unsupported:s.unsupported,count:s.count,details:s.unsupportedDetails};})()`);
+    assert.deepEqual(unknown,{unsupported:1,count:10,details:[{id:'q11',code:'missing-answer-control',optionCount:0}]},'missing controls must remain unsupported and identify the question');
+    await click('start');await waitFor('fixture.submits===1',20000);
+    assert.equal(await evaluate('fixture.apiCalls'),2);
+    assert.equal(await evaluate("fixture.lastSubmittedText.includes('运算器') && fixture.extraSubmittedText.includes('运算器')"),true);
+    console.log('PASS: eight choices and two other UEditor questions are recognized, filled, synced and submitted; task words do not override editor evidence; missing controls still block');
+    await command('Browser.close');return;
+  }
   if(process.argv.includes('--fallback-only')) {
     assert.equal(await evaluate("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#randomFallback').checked"),true);
     await click('autoNext');

@@ -10,11 +10,12 @@ function panelSettings(value) {
 }
 void chrome.storage.local?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" });
 const ready = chrome.storage.session.get("sessions").then(data => {
-  let recoveredRunning=false;
+  const recoveredContexts=new Set();
   for (const [key, saved] of Object.entries(data.sessions || {})) {
+    saved.incognito=saved.incognito===true;
     if(saved.allowed && saved.running) {
-      if(recoveredRunning) {saved.running=false;saved.mode='attention';saved.reason='恢复时发现其他课程标签页正在运行；本页已暂停';}
-      else recoveredRunning=true;
+      if(recoveredContexts.has(saved.incognito)) {saved.running=false;saved.mode='attention';saved.reason='恢复时发现同一浏览环境的其他课程标签页正在运行；本页已暂停';}
+      else recoveredContexts.add(saved.incognito);
     }
     if(saved.automation?.status==='submitted' && !saved.automation.submitPhase) {
       saved.automation={...saved.automation,status:'error',message:'旧版仅点击首次提交，需重新核验提交状态'};
@@ -32,14 +33,15 @@ const ready = chrome.storage.session.get("sessions").then(data => {
 async function save() {
   const saved = {};
   for (const [key, s] of sessions) {
-    saved[key] = { allowed: s.allowed, running: s.running, autoNext: s.autoNext,
+    saved[key] = { allowed: s.allowed, running: s.running, incognito:s.incognito, autoNext: s.autoNext,
       muted: s.muted, resume: s.resume, playbackRate: s.playbackRate,randomFallback:s.randomFallback,
       reason: s.reason, page: s.page, epoch: s.epoch, mode: s.mode, context:s.context, generation:s.generation, autoQuiz:s.autoQuiz, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard,courseId:s.courseId,courseKey:s.courseKey, automation:s.automation };
   }
   await chrome.storage.session.set({ sessions: saved });
 }
-function stateFor(tabId) {
+function stateFor(tabId,incognito) {
   if (!sessions.has(tabId)) sessions.set(tabId, {
+    incognito:incognito===true,
     allowed: false, running: false, mode: "idle", autoNext: true, autoQuiz:true, randomFallback:true, foregroundCompat:false, mouseGuard:true, muted: false, resume: true, playbackRate: 0, automation:null,
     reason: "点击开始后启动学习助手",courseId:'',courseKey:'', page: "", epoch: 0, generation: 0, context: "", reports: new Map(), changedAt: Date.now()
   });
@@ -57,7 +59,7 @@ function snapshot(s) {
   const taskVideoTasks=tasks.reduce((sum,r)=>sum+r.task.videoTasks,0);
   const taskResourcePending=result.count>taskVideoTasks || result.fresh.some(r=>r.lesson?.mediaPending && (!r.lesson.mediaBlockers.length || r.lesson.mediaBlockers.some(item=>item.kind!=='video')));
   const taskReady=taskCompleted && !result.blocked && !quizzes.length && !lessonPendingTasks && !taskResourcePending && !result.fresh.some(r=>r.lesson?.loadingImages) && Date.now()-s.changedAt>=4000;
-  return { allowed: s.allowed, running: s.running, courseId:s.courseId,courseKey:s.courseKey,mode: s.mode, autoNext: s.autoNext,
+  return { allowed: s.allowed, running: s.running, incognito:s.incognito, courseId:s.courseId,courseKey:s.courseKey,mode: s.mode, autoNext: s.autoNext,
     muted: s.muted, resume: s.resume, playbackRate: s.playbackRate, reason: s.reason, epoch: s.epoch,
     generation: s.generation, autoQuiz:s.autoQuiz, randomFallback:s.randomFallback, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard, automation:s.automation || null, quizDetected: quizzes.length > 0, quizDone,
     quizCount: quizzes.reduce((sum, r) => sum + r.quiz.count, 0),
@@ -71,6 +73,7 @@ function snapshot(s) {
     taskTotal:tasks.reduce((sum,r)=>sum+r.task.total,0),taskDone:tasks.reduce((sum,r)=>sum+r.task.done,0),
     taskKey:tasks.map(r=>`${r.frameId}:${r.page}:${r.task.signature}:${r.task.completed}`).join('|'),
     activeFrame: result.activeFrame, count: result.count,
+    waitingForVisible:result.fresh.some(r=>r.visibility==='hidden' && r.videos.some(v=>v.waitingForVisible===true && v.paused===true && !v.completed)),
     mediaDone: result.allDone,
     allDone: (result.allDone || (result.count === 0 && quizDone)) && (!tasks.length || taskCompleted) && (!quizzes.length || quizDone) && Date.now() - s.changedAt >= 4000,
     reports: result.fresh };
@@ -114,7 +117,7 @@ async function solveQuiz(s, sender) {
       const record=s.automation;
       if(!record || record.status!=='working' || s.generation!==job.generation) return;
       if(progress.phase==='batch') record.message=`正在请求第 ${progress.batch}/${progress.batches} 批答案`;
-      if(progress.phase==='transcribing') record.message=`检测到混淆字体，正在按页面字形读取 ${progress.id}`;
+      if(progress.phase==='transcribing') record.message=`正在按题图读取 ${progress.id}（字形或图片）`;
       if(progress.phase==='prepared') record.message=`题干准备 ${progress.completed}/${progress.total}${progress.randomOnly?'（该题将随机兜底）':''}`;
       if(progress.phase==='batch-complete') record.message=`答案完成 ${progress.completed}/${progress.batches} 批`;
       if(progress.phase==='random-fallback' || progress.phase==='random-fallback-pending') {record.message=`${progress.id} 将使用随机兜底（非模型答案）`;record.diagnostic={phase:progress.phase,id:progress.id,cause:progress.cause};}
@@ -164,7 +167,11 @@ async function autoQuiz(s,sender) {
   s.automation=record;
   await save();
   try {
-    if(report.quiz.unsupported) throw new Error('存在未识别题型，已停止自动提交');
+    if(report.quiz.unsupported) {
+      const details=report.quiz.unsupportedDetails || [];
+      record.diagnostic={phase:'question-structure',unsupported:details};
+      throw new Error(`存在未识别题型${details.length?'（'+details.map(q=>q.id).join('、')+'）':''}，已停止自动提交`);
+    }
     let job=aiJobs.get(sender.tab.id);
     if(!job?.result || job.generation!==s.generation || job.result.page!==report.page || job.result.fingerprint!==report.quiz.fingerprint) {
       const solved=await solveQuiz(s,sender);
@@ -238,7 +245,13 @@ async function handle(msg, sender) {
   const optionsUrl = chrome.runtime.getURL?.("options.html");
   if (optionsUrl && sender.url === optionsUrl && ["OPTIONS_GET", "OPTIONS_SAVE"].includes(msg.type)) return optionsMessage(msg);
   if (!sender.tab || !Number.isInteger(sender.frameId)) return { allowed: false };
-  const s = stateFor(sender.tab.id);
+  const s = stateFor(sender.tab.id,sender.tab.incognito);
+  // Only browser-supplied metadata identifies the cookie context. Ignore any
+  // claimed context in page messages; legacy saved tabs are classified here.
+  if(s.incognito!==(sender.tab.incognito===true)) {
+    s.incognito=sender.tab.incognito===true;
+    await save();
+  }
   if (msg.type === "HELLO" && sender.frameId === 0) {
     const course=XXTPolicy.courseInfo(sender.url || ''),allowed=!!course;
     const courseKey=course?.key || '';
@@ -336,6 +349,7 @@ async function handle(msg, sender) {
       playerSurface:!!msg.playerSurface,
       mouseApplied:!!msg.mouseApplied,
       pauseSignal:['manual','viewport-exit','window-blur','document-hidden','unknown'].includes(msg.pauseSignal)?msg.pauseSignal:'',
+      visibility:['visible','hidden'].includes(msg.visibility)?msg.visibility:'unknown',
       lesson:{detected:!!msg.lesson?.detected,ready:!!msg.lesson?.ready,
         chars:Math.min(100000,Math.max(0,Number(msg.lesson?.chars)||0)),images:Math.min(1000,Math.max(0,Number(msg.lesson?.images)||0)),
         pendingTasks:!!msg.lesson?.pendingTasks,mediaPending:!!msg.lesson?.mediaPending,loadingImages:!!msg.lesson?.loadingImages,signature:String(msg.lesson?.signature || '').slice(0,80)},
@@ -356,6 +370,7 @@ async function handle(msg, sender) {
     const quiz=s.reports.get(sender.frameId).quiz;
     quiz.total=Math.max(quiz.count,Number(msg.quiz?.total)||0);
     quiz.unsupported=Math.max(0,Number(msg.quiz?.unsupported)||0);
+    quiz.unsupportedDetails=(Array.isArray(msg.quiz?.unsupportedDetails)?msg.quiz.unsupportedDetails:[]).slice(0,40).filter(q=>/^q[1-9]\d{0,2}$/.test(q?.id) && ['missing-stem','missing-answer-control','unsupported-answer-control'].includes(q?.code)).map(q=>({id:q.id,code:q.code,optionCount:number(q.optionCount)}));
     quiz.fingerprint=String(msg.quiz?.fingerprint || '').slice(0,80);
     quiz.evidence=['answer-review','status-marker','completion-message'].includes(msg.quiz?.evidence)?msg.quiz.evidence:'';
     if(quiz.completed && pendingSubmission(s.automation) && (quiz.fingerprint===s.automation.fingerprint || !quiz.count)) {
@@ -371,10 +386,10 @@ async function handle(msg, sender) {
   }
   if (msg.type === "CONTROL" && sender.frameId === 0 && msg.page === s.page) {
     if (msg.action === "start") {
-      const other = [...sessions.entries()].find(([id, session]) => id !== sender.tab.id && session.allowed && session.running);
+      const other = [...sessions.entries()].find(([id, session]) => id !== sender.tab.id && session.incognito===s.incognito && session.allowed && session.running);
       if (other) {
         s.running=false;s.mode='attention';
-        s.reason='已有课程标签页正在运行；先暂停或停止该页，再在此开始';
+        s.reason=`${s.incognito?'InPrivate':'普通'}环境已有课程标签页正在运行；先暂停或停止该环境的运行页，再在此开始`;
         await save();return {...snapshot(s),thisFrame:sender.frameId};
       }
       if(s.automation && ['error','working','submitting'].includes(s.automation.status)) s.automation=null;

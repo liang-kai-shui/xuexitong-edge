@@ -26,8 +26,8 @@
     const candidates = [...document.querySelectorAll('.singleQuesId,.TiMu,[data-question-id],.question-item')];
     const roots = candidates.filter(el => visible(el) && !candidates.some(parent => parent !== el && parent.contains(el)));
     return roots.map((root, index) => {
-      const title = root.querySelector('.Zy_TItle .fontLabel,.Zy_TItle,.newZy_TItle .fontLabel,.newZy_TItle,.question-title,.stem,h3');
-      const stem = compact(title?.innerText);
+      const title = root.querySelector('.Zy_TItle,.newZy_TItle,.question-title,.stem,h3');
+      const stem = compact(title?.innerText) || (globalThis.XXTQuestionImage?.media(title)?'[图片题，等待视觉转录]':'');
       const candidates = [...root.querySelectorAll('.Zy_ulTop > li,[role="radio"],[role="checkbox"],.options > label')];
       const choices = candidates.filter(el => visible(el) && !candidates.some(parent => parent !== el && parent.contains(el)));
       const used = new Set();
@@ -42,13 +42,16 @@
       }).filter(Boolean);
       const qtype = choices[0]?.getAttribute('qtype');
       const editor = editorFor(root);
-      const type = /简答|论述|问答|名词解释/.test(stem) && !options.length ? 'short'
+      // The answer control is stronger evidence than words in the task itself.
+      // "Other" UEditor questions may ask about sorting or programming.
+      const type = !options.length && editor ? 'short'
+        : /简答|论述|问答|名词解释/.test(stem) && !options.length ? 'short'
         : /填空|编程|上传|连线|排序/.test(stem) && !options.length ? 'unsupported'
-        : !options.length && editor ? 'short'
         : /多选/.test(stem) || qtype === "1" || choices.some(el => el.matches('[role="checkbox"]') || el.querySelector('input[type="checkbox"]')) ? "multiple"
         : /判断/.test(stem) || qtype === "3" ? "judge" : "single";
       const encrypted=!!globalThis.XXTQuestionImage && [title,...choices].some(el=>XXTQuestionImage.encrypted(el));
-      return { root, title, id: `q${index + 1}`, type, stem, options, editor, encrypted };
+      const visual=!!globalThis.XXTQuestionImage && [title,...choices].some(el=>XXTQuestionImage.media(el));
+      return { root, title, id: `q${index + 1}`, type, stem, options, editor, encrypted,visual };
     });
   }
   function scan() {
@@ -74,21 +77,26 @@
     const body = document.body?.innerText || "";
     const completion = items.length === 0 && /(?:你已完成本次作业|作业已提交|已完成该测验|本次作业已完成|提交成功)/.test(body);
     const detected = items.length > 0 || !!document.querySelector('form#form1[action*="StudentWork"],#ZyBottom,.ans-insertwork-online') || completion || nativeStatus;
-    const questions = review ? [] : items.filter(q => q.stem && (q.type === 'short' || q.options.length >= 2)).map(q => ({ id: q.id, type: q.type, stem: q.stem, options: q.options.map(({key, text}) => ({key, text})),...(q.encrypted?{encrypted:true}:{}) }));
+    const questions = review ? [] : items.filter(q => q.stem && (q.type === 'short' || q.options.length >= 2)).map(q => ({ id: q.id, type: q.type, stem: q.stem, options: q.options.map(({key, text}) => ({key, text})),...(q.encrypted?{encrypted:true}:{}),...(q.visual?{visual:true}:{}) }));
+    const resources=items.filter(q=>q.visual).map(q=>[q.id,[q.title,...q.options.map(o=>o.el)].filter(Boolean).flatMap(el=>[...el.querySelectorAll('img')].map(img=>[img.currentSrc||img.src,img.complete,img.naturalWidth,img.naturalHeight]))]);
+    const supportedIds=new Set(questions.map(q=>q.id));
+    const unsupportedDetails=review?[]:items.filter(q=>!supportedIds.has(q.id)).map(q=>({id:q.id,code:!q.stem?'missing-stem':!q.options.length&&!q.editor?'missing-answer-control':'unsupported-answer-control',optionCount:q.options.length}));
     return { detected, count: questions.length, total:items.length, unsupported: review ? 0 : items.length - questions.length,
+      unsupportedDetails,
       completed: detected && (marker || completion || review), evidence: review ? 'answer-review' : marker ? 'status-marker' : completion ? 'completion-message' : '',
-      fingerprint: hash(JSON.stringify(questions)), questions, items };
+      fingerprint: hash(JSON.stringify(questions)+(resources.length?JSON.stringify(resources):'')), questions, items };
   }
   async function read() {
     const current=scan();
     for(const q of current.questions) {
-      if(!q.encrypted)continue;
+      if(!q.encrypted && !q.visual)continue;
       const item=current.items.find(item=>item.id===q.id);
       if(!item?.title)throw new Error('混淆字体题目的题干节点不完整，已停止作答');
-      q.image=await XXTQuestionImage.render([{label:`题目 ${q.id}（${q.type}）`,el:item.title},...item.options.map(o=>({label:`选项 ${o.key}`,el:o.el}))]);
+      try {q.image=await XXTQuestionImage.render([{label:`题目 ${q.id}（${q.type}）`,el:item.title},...item.options.map(o=>({label:`选项 ${o.key}`,el:o.el}))]);}
+      catch(error){throw new Error(`${q.id}：${error.message}`);}
     }
     if(scan().fingerprint!==current.fingerprint)throw new Error('生成题目图像期间页面已变化，请重新识别');
-    return {fingerprint:current.fingerprint,questions:current.questions,total:current.total,unsupported:current.unsupported};
+    return {fingerprint:current.fingerprint,questions:current.questions,total:current.total,unsupported:current.unsupported,unsupportedDetails:current.unsupportedDetails};
   }
   function matches(item, answer) {
     if (!item || !Array.isArray(answer?.answer) || !answer.answer.length) return false;
