@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>通用网课助手</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 14px; width: 320px; color: #182335; background: #fff; }
+  h1 { font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px; }
+  h1 small { font-size: 11px; color: #7b8aa2; font-weight: 400; }
+  .site { margin: 12px 0 10px; padding: 10px 12px; border-radius: 10px; background: #f4f7fc; border: 1px solid #e5ebf4; }
+  .site b { font-size: 14px; }
+  .site .meta { color: #6b7a93; font-size: 12px; margin-top: 2px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  button { flex: 1; padding: 8px 10px; border: 1px solid #b9c7db; border-radius: 8px; background: #eef3fa; color: #182335; font: inherit; cursor: pointer; white-space: nowrap; }
+  button.primary { background: #235de4; border-color: #235de4; color: #fff; }
+  button.warn { background: #fff3e8; border-color: #eccaa4; color: #8a4b00; }
+  button:disabled { opacity: .55; cursor: default; }
+  .label { font-size: 12px; color: #6b7a93; margin: 10px 0 2px; }
+  .switch { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 6px; }
+  .status { font-size: 12px; color: #235de4; min-height: 16px; margin: 6px 0 0; }
+  .status.error { color: #b42318; }
+  .ai { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e3e9f2; font-size: 12px; color: #6b7a93; display: flex; justify-content: space-between; gap: 8px; }
+  .ai a { color: #235de4; cursor: pointer; text-decoration: none; }
+  .hint { font-size: 12px; color: #7b8aa2; margin: 6px 0 0; }
+  hr { border: 0; border-top: 1px dashed #e3e9f2; margin: 10px 0; }
+</style>
+</head>
+<body>
+  <h1>通用网课助手 <small id="version"></small></h1>
+  <div class="site">
+    <b id="siteName">正在读取当前页面…</b>
+    <div class="meta" id="siteMeta"></div>
+    <div class="switch" id="enabledRow" style="display:none"><input id="enabled" type="checkbox"><label for="enabled">在此网站启用助手</label></div>
+    <div class="row" id="unknownRow" style="display:none"><button id="enableCustom" class="primary">为此网站启用通用模式</button></div>
+  </div>
+  <div class="row" id="controlRow" style="display:none">
+    <button id="start" class="primary">开始 / 继续</button>
+    <button id="pause">暂停</button>
+    <button id="togglePanel">显示 / 隐藏面板</button>
+  </div>
+  <div class="row"><button id="reload">刷新页面</button><button id="openOptions">打开设置</button></div>
+  <p id="status" class="status" role="status"></p>
+  <p class="hint" id="hint">登录课程后点“开始/继续”，助手会在页面右下角显示面板。</p>
+  <div class="ai"><span id="aiState">AI 状态读取中…</span><a id="openOptions2">AI 设置</a></div>
+  <script src="popup.js"></script>
+</body>
+</html>
