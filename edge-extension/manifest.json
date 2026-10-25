@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "学习通视频播放助手",
+  "version": "1.7.1",
+  "description": "学习通课程学习页的视频播放、倍速、DeepSeek 选择与简答题填写、章节测验自动提交和下一节切换。",
+  "permissions": ["storage", "scripting"],
+  "host_permissions": ["https://api.deepseek.com/*", "https://*.chaoxing.com/*"],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_title": "DeepSeek 设置" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://*.chaoxing.com/*"],
+    "js": ["policy.js", "text.js", "question-image.js", "quiz.js", "lesson.js", "navigation.js", "panel-ui.js", "content.js"],
+    "all_frames": true,
+    "match_about_blank": true,
+    "run_at": "document_idle"
+  }]
+}

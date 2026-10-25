@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>学习通助手 · DeepSeek 设置</title>
+<style>body{font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f3f6fc;color:#182335;margin:40px auto;max-width:680px;padding:20px}main{background:white;padding:28px;border-radius:14px}h1{font-size:23px}label{display:block;margin:18px 0}input[type=password]{display:block;width:95%;padding:10px;border:1px solid #aabbd1;border-radius:6px}button,select{padding:9px;margin:4px;cursor:pointer}#save{background:#235de4;color:#fff;border:0;border-radius:6px}#status{white-space:pre-wrap}small{color:#53617c}</style></head>
+<body><main><h1>DeepSeek 答题设置</h1><p>点击课程面板的“生成答案与解析”时，将该页识别到的题干和选项发送至 DeepSeek 官方 API。接口会产生 API 用量费用。</p>
+<label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="输入新密钥；留空保留已保存密钥"></label>
+<label>模型<select id="model"><option value="deepseek-flash">DeepSeek Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
+<label>思考强度<select id="effort"><option value="high">高（默认）</option><option value="max">最高</option><option value="low">低</option><option value="none">关闭</option></select></label>
+<p><small>开启思考会增加等待时间和 API 用量。遇到混淆字体时，先用 DeepSeek Flash 视觉接口读取题干字形，再用所选模型作答；会额外发送仅包含题干和选项的图像，不发送整页截图。识别失败时停止填写。</small></p>
+<button id="save">保存设置</button><button id="clear">清除密钥</button>
+<label>或导入本机配置 JSON<input id="import" type="file" accept=".json,application/json"></label>
+<p id="status" role="status">读取设置…</p><small>密钥仅保存在当前 Edge 配置的扩展本地存储中，未加密；内容脚本不会获得密钥。全自动模式会生成、填写并提交答案；可在课程面板取消勾选该模式，改为手动核对提交。</small>
+</main><script src="options.js"></script></body></html>
