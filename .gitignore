@@ -9,5 +9,3 @@ coverage/
 Thumbs.db
 .DS_Store
 *deepseek-config*.json
-tests/.e2e-ext/
-tests/e2e-result.txt

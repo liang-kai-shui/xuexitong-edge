@@ -1,106 +1,12 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>通用网课助手 · 设置</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  body { font: 15px/1.7 system-ui, "Microsoft YaHei", sans-serif; background: #f2f5fb; color: #182335; margin: 0; padding: 32px 16px 60px; }
-  main { max-width: 780px; margin: 0 auto; }
-  header, section { background: #fff; border-radius: 14px; padding: 22px 26px; margin-bottom: 18px; box-shadow: 0 2px 10px #1c2a4510; }
-  h1 { font-size: 24px; margin: 0 0 4px; }
-  h1 small { font-size: 13px; color: #6b7a93; font-weight: 400; }
-  h2 { font-size: 18px; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid #eef1f6; }
-  h3 { font-size: 15px; margin: 18px 0 6px; }
-  .sub, .hint { color: #5d6c85; font-size: 13px; margin: 4px 0 14px; }
-  label { display: block; margin: 12px 0; font-size: 14px; }
-  label > input:not([type=checkbox]):not([type=radio]):not([type=file]), label > select { display: block; width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid #b9c7db; border-radius: 8px; font: inherit; background: #fbfcfe; }
-  label > select { max-width: 280px; }
-  button, .file-label { padding: 8px 14px; border: 1px solid #b9c7db; border-radius: 8px; background: #eef3fa; color: #182335; font: inherit; cursor: pointer; }
-  button.primary { background: #235de4; border-color: #235de4; color: #fff; }
-  button.danger { background: #fdecec; border-color: #e5b4b4; color: #a01f1f; }
-  button:disabled { opacity: .55; cursor: default; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
-  .row input[type=text] { flex: 1; min-width: 220px; padding: 9px 11px; border: 1px solid #b9c7db; border-radius: 8px; font: inherit; }
-  .row input:not([type]) { flex: 1; min-width: 220px; padding: 9px 11px; border: 1px solid #b9c7db; border-radius: 8px; font: inherit; }
-  .status { font-size: 13px; color: #235de4; min-height: 20px; margin: 8px 0 0; }
-  .status.error { color: #b42318; }
-  .warn { font-size: 12px; color: #8a5a00; background: #fff8e6; border: 1px solid #f2dfae; padding: 8px 10px; border-radius: 8px; margin-top: 14px; }
-  .site-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px dashed #edf0f5; font-size: 14px; }
-  .site-row:last-child { border-bottom: 0; }
-  .site-row .grow { flex: 1; margin: 0; }
-  .site-row .grow input { margin-right: 6px; }
-  .site-row small { color: #71809a; font-size: 12px; display: block; margin-left: 22px; }
-  .site-row .mini { margin: 0; font-size: 13px; white-space: nowrap; color: #4b5b73; }
-  .site-row .mini input { margin-right: 4px; }
-  .tag { display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 999px; background: #eaf0ff; color: #235de4; margin-left: 6px; vertical-align: 1px; }
-  details { margin: 10px 0; } summary { cursor: pointer; color: #284069; }
-  details p { color: #4e5e78; font-size: 14px; }
-  footer { text-align: center; color: #8492a8; font-size: 12px; margin-top: 10px; }
-  input[type=file] { font-size: 13px; }
-</style>
-</head>
-<body>
-<main>
-  <header>
-    <h1>通用网课助手 <small id="version"></small></h1>
-    <p class="sub">多平台网课自动播放 · 倍速 · 自动下一节 · AI 答题。内置站点打开课程页面即可使用，无需任何配置。</p>
-  </header>
-
-  <section id="ai">
-    <h2>AI 答题设置</h2>
-    <p class="hint">默认使用 DeepSeek 官方接口；也可填写任意 OpenAI 兼容的 <code>/chat/completions</code> 地址（如中转服务、其他厂商）。密钥只保存在本机扩展存储中，不会发送给课程网站。</p>
-    <label>接口地址<input id="baseUrl" type="text" list="baseUrls" placeholder="https://api.deepseek.com" autocomplete="off"></label>
-    <datalist id="baseUrls"></datalist>
-    <label>模型<input id="model" type="text" list="models" placeholder="deepseek-flash" autocomplete="off"></label>
-    <datalist id="models"></datalist>
-    <label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="留空表示保留已保存的密钥"></label>
-    <label>思考强度<select id="effort"></select></label>
-    <div class="row">
-      <button id="saveAi" class="primary">保存设置</button>
-      <button id="testAi">测试连接</button>
-      <button id="clearKey" class="danger">清除密钥</button>
-    </div>
-    <p id="aiStatus" class="status" role="status">读取设置…</p>
-    <p class="warn">AI 答题会产生接口费用；全自动模式仅在学习通等已适配平台默认开启，其余平台默认只填入答案、由你核对后手动提交。</p>
-  </section>
-
-  <section id="sites">
-    <h2>平台与站点</h2>
-    <p class="hint">关闭某个平台后，扩展不再在该站显示助手面板（刷新页面生效）。</p>
-    <div id="siteList"></div>
-    <h3>自定义网站（通用模式）</h3>
-    <p class="hint">任意视频课程网站添加域名后即可启用，扩展会向浏览器申请该域名的访问权限。通用模式提供播放、倍速、续播与自动下一节；题目识别为实验性辅助能力，默认不自动提交。</p>
-    <div class="row">
-      <input id="customHost" type="text" placeholder="例如 course.example.com" autocomplete="off">
-      <button id="addCustom">添加并授权</button>
-    </div>
-    <div id="customList"></div>
-    <p id="siteStatus" class="status" role="status"></p>
-  </section>
-
-  <section id="defaults">
-    <h2>默认行为（对之后打开的课程页生效）</h2>
-    <label><input id="dAutoNext" type="checkbox"> 自动进入后续步骤 / 下一节</label>
-    <label><input id="dResume" type="checkbox"> 意外暂停后续播（含鼠标移出）</label>
-    <label><input id="dMuted" type="checkbox"> 静音播放</label>
-    <label><input id="dForeground" type="checkbox"> 后台播放兼容（实验：部分播放器检测页面可见性时使用）</label>
-    <label>默认倍速<select id="dRate"></select></label>
-    <p id="defaultsStatus" class="status" role="status"></p>
-  </section>
-
-  <section id="help">
-    <h2>说明与排查</h2>
-    <details><summary>支持哪些平台？</summary><p>内置：超星学习通 / 泛雅 / 学银在线、智慧树、中国大学 MOOC、学堂在线、雨课堂、智慧职教 / 职教云、优学院。其他任意网站可通过“自定义网站”启用通用模式。平台改版后若识别不到按钮，可在页面面板手动点“下一步 / 下一节”，并复制诊断日志反馈。</p></details>
-    <details><summary>为什么需要这些权限？</summary><p>storage：保存设置；scripting：为自定义站点注入脚本；activeTab 与各站点权限：仅在课程网站生效；可选权限：只在你添加自定义网站或自定义 AI 接口时申请。扩展不读取或上传课程网站账号信息。</p></details>
-    <details><summary>自动答题安全吗？</summary><p>学习通流程为“生成 → 填入 → 逐题校验 → 提交 → 等待平台确认”，校验失败会停止；其他平台默认只填入、由你核对后手动提交。验证码、弹题、人脸识别需要手动完成。请遵守学校与平台规定，自行承担使用风险。</p></details>
-    <details><summary>从旧版迁移配置</summary><p>可选择旧版导出的配置 JSON（包含 apiKey / model / effort），导入后会填入本页表单，点击“保存设置”生效。<br><input id="import" type="file" accept=".json,application/json"></p></details>
-  </section>
-
-  <footer>通用网课助手 v2 · 仅供个人学习管理使用，请遵守所在平台使用条款与学校规定。</footer>
-</main>
-<script src="options.js"></script>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>学习通助手 · DeepSeek 设置</title>
+<style>body{font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f3f6fc;color:#182335;margin:40px auto;max-width:680px;padding:20px}main{background:white;padding:28px;border-radius:14px}h1{font-size:23px}label{display:block;margin:18px 0}input[type=password]{display:block;width:95%;padding:10px;border:1px solid #aabbd1;border-radius:6px}button,select{padding:9px;margin:4px;cursor:pointer}#save{background:#235de4;color:#fff;border:0;border-radius:6px}#status{white-space:pre-wrap}small{color:#53617c}</style></head>
+<body><main><h1>DeepSeek 答题设置</h1><p>点击课程面板的“生成答案与解析”时，将该页识别到的题干和选项发送至 DeepSeek 官方 API。接口会产生 API 用量费用。</p>
+<label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="输入新密钥；留空保留已保存密钥"></label>
+<label>模型<select id="model"><option value="deepseek-flash">DeepSeek Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
+<label>思考强度<select id="effort"><option value="high">高（默认）</option><option value="max">最高</option><option value="low">低</option><option value="none">关闭</option></select></label>
+<p><small>开启思考会增加等待时间和 API 用量。遇到混淆字体时，先用 DeepSeek Flash 视觉接口读取题干字形，再用所选模型作答；会额外发送仅包含题干和选项的图像，不发送整页截图。识别失败时停止填写。</small></p>
+<button id="save">保存设置</button><button id="clear">清除密钥</button>
+<label>或导入本机配置 JSON<input id="import" type="file" accept=".json,application/json"></label>
+<p id="status" role="status">读取设置…</p><small>密钥仅保存在当前 Edge 配置的扩展本地存储中，未加密；内容脚本不会获得密钥。全自动模式会生成、填写并提交答案；可在课程面板取消勾选该模式，改为手动核对提交。</small>
+</main><script src="options.js"></script></body></html>
