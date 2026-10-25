@@ -194,7 +194,7 @@
       h3{font-size:15px;margin:0;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shortTitle{display:none}:host([data-minimized="true"]) .fullTitle{display:none}:host([data-minimized="true"]) .shortTitle{display:inline}
       #panelBody{padding:0 15px 15px;overflow:auto;min-height:0}#panelBody[hidden]{display:none}#minimize{margin:0;padding:2px;width:28px;height:28px;flex-shrink:0;font-size:18px;line-height:1}
       p{margin:6px 0;overflow-wrap:anywhere}button{cursor:pointer;padding:7px 11px;margin:4px 4px 4px 0;border:1px solid #bccbdc;border-radius:6px;background:#eef3fa;color:#182335}#start{background:#235de4;color:#fff}label{display:block;margin:4px 0}input{vertical-align:middle}details{margin-top:8px}pre{font:11px/1.5 monospace;max-height:130px;overflow:auto;white-space:pre-wrap}.muted{color:#627086;font-size:12px}
-      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.1</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
+      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.2</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
       <div><button id="start">开始 / 继续</button><button id="pause">暂停</button><button id="stop">停止</button></div>
       <button id="next">下一步 / 下一节</button>
       <label>播放倍速 <select id="playbackRate" aria-label="播放倍速"><option value="0">跟随播放器</option><option value="1">1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">2 倍</option></select></label>
@@ -261,7 +261,7 @@
       void tick();
     };
     root.querySelector("#copy").onclick = async () => {
-      const clean = { version: "1.7.1",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
+      const clean = { version: "1.7.2",courseId:state?.courseId, running: state?.running, autoQuiz:state?.autoQuiz, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
         reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, mouseApplied, pauseSignal, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, mouseApplied, pauseSignal, confirmation, blocked, note })), logs };
       try { await navigator.clipboard.writeText(JSON.stringify(clean, null, 2)); log("诊断已复制，不含链接参数或 Cookie"); }
       catch { log("复制失败，请手动选取日志文字"); }

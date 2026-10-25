@@ -261,15 +261,16 @@ async function main() {
       fs.mkdirSync(path.join(root,'.local'),{recursive:true});
       fs.writeFileSync(path.join(root,'.local','instruction-visual.json'),JSON.stringify([{id:'q1',type:'short',stem:'不可作为原文使用',options:[],encrypted:true,image}]));
     }
-    await evaluate("(()=>{const base=window.fetch;fixture.visionCalls=0;window.fetch=async(url,options)=>{const body=JSON.parse(options.body);if(Array.isArray(body.messages?.[1]?.content)){fixture.visionCalls++;const meta=JSON.parse(body.messages[1].content[0].text);return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({id:meta.id,readable:!fixture.ocrFail,stem:'单选题：1+1 等于多少？',options:[{key:'A',text:'2'},{key:'B',text:'3'}]})}}]}),{status:200});}fixture.lastThinking=body.thinking;fixture.lastEffort=body.reasoning_effort;return base(url,options);};})()");
+    await evaluate("(()=>{const base=window.fetch;fixture.visionCalls=0;window.fetch=async(url,options)=>{const body=JSON.parse(options.body);if(Array.isArray(body.messages?.[1]?.content)){fixture.visionCalls++;const meta=JSON.parse(body.messages[1].content[0].text);const json=JSON.stringify({id:meta.id,readable:!fixture.ocrFail,stem:'单选题：1+1 等于多少？',options:[{key:'A',text:'2'},{key:'B',text:'3'}]});const content=fixture.visionCalls===1?'':'```json\\n'+json+'\\n```';return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content}}]}),{status:200});}fixture.lastThinking=body.thinking;fixture.lastEffort=body.reasoning_effort;return base(url,options);};})()");
     await click('aiSolve');await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#answers').textContent.includes('q6')",15000);
-    assert.equal(await evaluate('fixture.visionCalls'),1);assert.equal(await evaluate('fixture.apiCalls'),2);
+    assert.equal(await evaluate('fixture.visionCalls'),2);assert.equal(await evaluate('fixture.apiCalls'),2);
     assert.equal(await evaluate('fixture.lastThinking.type'),'enabled');assert.equal(await evaluate('fixture.lastEffort'),'high');
     assert.equal(await evaluate("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#answers').textContent.includes('读取题干：单选题：1+1 等于多少')"),true);
     await click('aiApply');await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#answers').textContent.includes('已填入 6 题')",12000);
     await evaluate('fixture.ocrFail=true');await click('aiSolve');await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#answers').textContent.includes('已停止作答')");
+    assert.equal(await evaluate('fixture.visionCalls'),3,'readable=false must stop without another visual retry');
     assert.equal(await evaluate('fixture.apiCalls'),2);assert.equal(await evaluate('fixture.submits'),0);
-    console.log('PASS: custom page glyphs change the question image, visual text precedes high-thinking answers, uncertain OCR stops without answering or submitting');
+    console.log('PASS: page glyphs change the image; empty visual content retries once, fenced JSON precedes high-thinking answers, uncertain OCR stops without answering or submitting');
     await command('Browser.close');return;
   }
   if(process.argv.includes('--foreground-only')) {

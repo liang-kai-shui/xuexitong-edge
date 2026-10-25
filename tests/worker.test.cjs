@@ -287,6 +287,92 @@ test('uncertain visual text and truncated output stop without guessing or additi
   }
 });
 
+test('visual JSON fences are accepted without changing C operators, quotes or backslashes',async()=>{
+  let calls=0;
+  const transcription={id:'q4',readable:true,stem:'设 I、J 和 K 为 int 型，选出表达式。',options:[
+    {key:'A',text:"'I' && 'J'"},{key:'B',text:'I <= J'},
+    {key:'C',text:'I || J+K - J-K'},{key:'D',text:'!((I < J) && !K || 1); printf("x\\n")'}
+  ]};
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+    calls++;const body=JSON.parse(request.body);
+    assert.equal(body.response_format.type,'json_object');assert.match(body.messages[0].content,/"id":"q4"/);
+    assert.equal(JSON.stringify(body).includes('混淆原文'),false);
+    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'\uFEFF  ```JSON\n'+JSON.stringify(transcription)+'\n```  '}}]})};
+  }});
+  const qs=await f.context.XXTDeepSeek.prepare([{id:'q4',type:'single',stem:'混淆原文',options:transcription.options.map(o=>({key:o.key,text:'混淆原文'})),encrypted:true,image:'data:image/png;base64,AAAA'}],new AbortController().signal);
+  assert.equal(calls,1);assert.deepEqual(JSON.parse(JSON.stringify(qs[0].options)),transcription.options);
+  assert.equal(qs[0].stem,transcription.stem);
+});
+
+test('empty or invalid visual JSON retries that image once without repeating earlier questions or leaking raw text',async()=>{
+  for(const malformed of ['', '{private-model-response', '解释文字\n{"id":"q4"}']) {
+    const calls=[],progress=[];
+    const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+      const body=JSON.parse(request.body),meta=JSON.parse(body.messages[1].content[0].text);
+      calls.push({id:meta.id,image:body.messages[1].content[1].image_url.url});
+      assert.equal(body.messages[0].content.includes('private-model-response'),false);
+      const count=calls.filter(c=>c.id===meta.id).length;
+      const content=meta.id==='q4'&&count===1?malformed:JSON.stringify({id:meta.id,readable:true,stem:'已读取的题干 '+meta.id,options:[]});
+      return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content}}]})};
+    }});
+    const input=['q3','q4','q5'].map(id=>({id,type:'short',stem:'不得使用的原文',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}));
+    const qs=await f.context.XXTDeepSeek.prepare(input,new AbortController().signal,event=>progress.push(event));
+    assert.deepEqual(calls.map(c=>c.id),['q3','q4','q4','q5']);assert.equal(calls[1].image,calls[2].image);
+    assert.deepEqual(Array.from(qs,q=>q.id),['q3','q4','q5']);
+    assert.equal(progress.filter(p=>p.phase==='transcription-retry').length,1);
+    const diagnostic=progress.find(p=>p.phase==='transcription-format').diagnostic;
+    assert.deepEqual(Object.keys(diagnostic).sort(),['chars','fenced','kind']);
+    assert.equal(JSON.stringify(progress).includes('private-model-response'),false);
+  }
+});
+
+test('invalid visual JSON has a strict retry limit and ambiguous parsed content remains rejected',async()=>{
+  const cases=[['not JSON',2,/连续 2 次/],['null',1,/未能完整确认/],['[]',1,/未能完整确认/],
+    [JSON.stringify({id:'q4',readable:false,stem:'不确定',options:[]}),1,/未能完整确认/],
+    [JSON.stringify({id:'q1',readable:true,stem:'错题号',options:[]}),1,/未能完整确认/],
+    [JSON.stringify({id:'q4',readable:true,stem:'选项缺失',options:[{key:'A',text:'部分内容'}]}),1,/未能完整确认/]];
+  for(const [content,expectedCalls,message] of cases) {
+    let calls=0;
+    const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async()=>{
+      calls++;return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content}}]})};
+    }});
+    await assert.rejects(()=>f.context.XXTDeepSeek.prepare([{id:'q4',type:'short',stem:'不得猜测',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}],new AbortController().signal),message);
+    assert.equal(calls,expectedCalls);
+  }
+});
+
+test('cancellation after malformed visual output prevents the retry request',async()=>{
+  let calls=0;const controller=new AbortController();
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async()=>{
+    calls++;return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:''}}]})};
+  }});
+  await assert.rejects(()=>f.context.XXTDeepSeek.prepare([{id:'q4',type:'short',stem:'原文',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}],controller.signal,event=>{
+    if(event.phase==='transcription-format')controller.abort();
+  }));
+  assert.equal(calls,1);
+});
+
+test('automatic visual format failure records bounded diagnostics and never fills or submits',async()=>{
+  const counts={visual:0,apply:0,submit:0};
+  const f=fixture({}, {local:{deepseek:{apiKey:'sk-test-key-not-a-real-credential'}},fetch:async(url,request)=>{
+    assert.ok(Array.isArray(JSON.parse(request.body).messages[1].content));counts.visual++;
+    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'private-model-response'}}]})};
+  },onTabMessage:async(tab,msg)=>{
+    if(msg.type==='QUIZ_READ')return {page:'quiz',fingerprint:'glyph-failure',questions:[{id:'q4',type:'short',stem:'混淆原文',options:[],encrypted:true,image:'data:image/png;base64,AAAA'}]};
+    if(msg.type==='QUIZ_APPLY')counts.apply++;
+    if(msg.type==='QUIZ_SUBMIT')counts.submit++;
+    return {};
+  }});
+  await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});
+  await f.send({type:'REPORT',page:'quiz',videos:[],quiz:{detected:true,count:1,total:1,unsupported:0,fingerprint:'glyph-failure'}},2);
+  const result=await f.send({type:'AUTO_QUIZ'});
+  assert.match(result.error,/字形读题 q4 连续 2 次/);
+  assert.deepEqual(counts,{visual:2,apply:0,submit:0});
+  const state=await f.send({type:'HELLO'});assert.equal(state.running,false);
+  assert.equal(state.automation.diagnostic.kind,'json');assert.equal(state.automation.diagnostic.attempt,2);
+  assert.equal(JSON.stringify(state.automation).includes('private-model-response'),false);
+});
+
 test('foreground compatibility needs an active reported player and explicit setting; restoration remains allowed',async()=>{
   let calls=0;
   const f=fixture({}, {executeScript:async()=>{calls++;return [{result:{ok:true}}];}});

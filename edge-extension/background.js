@@ -103,6 +103,11 @@ async function solveQuiz(s, sender) {
       if(!record || record.status!=='working' || s.generation!==job.generation) return;
       if(progress.phase==='batch') record.message=`正在请求第 ${progress.batch}/${progress.batches} 批答案`;
       if(progress.phase==='transcribing') record.message=`检测到混淆字体，正在按页面字形读取 ${progress.id}`;
+      if(progress.phase==='transcription-format') record.diagnostic={phase:progress.phase,id:progress.id,attempt:progress.attempt,...progress.diagnostic};
+      if(progress.phase==='transcription-retry') {
+        record.message=`字形读题 ${progress.id} 返回格式无效，正在重新读取图片（1/1）`;
+        record.diagnostic={phase:progress.phase,id:progress.id,attempt:progress.attempt,...progress.diagnostic};
+      }
       if(progress.phase==='schema') record.diagnostic=progress;
       if(progress.phase==='retry') {
         record.message=`返回题号或格式不匹配，正在自动重试 ${progress.id}（${progress.attempt}/2）`;
