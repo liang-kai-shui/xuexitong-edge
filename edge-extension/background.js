@@ -1,5 +1,5 @@
 "use strict";
-importScripts("policy.js", "deepseek.js", "page-action.js");
+importScripts("policy.js", "deepseek.js", "page-action.js", "launch-state.js");
 const sessions = new Map();
 const aiJobs = new Map();
 const confirmingTabs=new Set();
@@ -23,6 +23,7 @@ const ready = chrome.storage.session.get("sessions").then(data => {
     sessions.set(Number(key), { ...saved,
       playbackRate: XXTPolicy.validRate(saved.playbackRate) ? saved.playbackRate : 0,
       autoQuiz: saved.autoQuiz ?? true,
+      autoContinue:saved.autoContinue ?? true,
       randomFallback:saved.randomFallback ?? true,
       foregroundCompat:!!saved.foregroundCompat,
       mouseGuard:saved.mouseGuard ?? true,
@@ -34,7 +35,7 @@ async function save() {
   const saved = {};
   for (const [key, s] of sessions) {
     saved[key] = { allowed: s.allowed, running: s.running, incognito:s.incognito, autoNext: s.autoNext,
-      muted: s.muted, resume: s.resume, playbackRate: s.playbackRate,randomFallback:s.randomFallback,
+      muted: s.muted, resume: s.resume, playbackRate: s.playbackRate,randomFallback:s.randomFallback,autoContinue:s.autoContinue,
       reason: s.reason, page: s.page, epoch: s.epoch, mode: s.mode, context:s.context, generation:s.generation, autoQuiz:s.autoQuiz, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard,courseId:s.courseId,courseKey:s.courseKey, automation:s.automation };
   }
   await chrome.storage.session.set({ sessions: saved });
@@ -42,7 +43,7 @@ async function save() {
 function stateFor(tabId,incognito) {
   if (!sessions.has(tabId)) sessions.set(tabId, {
     incognito:incognito===true,
-    allowed: false, running: false, mode: "idle", autoNext: true, autoQuiz:true, randomFallback:true, foregroundCompat:false, mouseGuard:true, muted: false, resume: true, playbackRate: 0, automation:null,
+    allowed: false, running: false, mode: "idle", autoNext: true, autoQuiz:true, randomFallback:true, autoContinue:true, foregroundCompat:false, mouseGuard:true, muted: false, resume: true, playbackRate: 0, automation:null,
     reason: "点击开始后启动学习助手",courseId:'',courseKey:'', page: "", epoch: 0, generation: 0, context: "", reports: new Map(), changedAt: Date.now()
   });
   return sessions.get(tabId);
@@ -58,15 +59,16 @@ function snapshot(s) {
   const taskCompleted=tasks.length>0 && tasks.every(r=>r.task.completed);
   const taskVideoTasks=tasks.reduce((sum,r)=>sum+r.task.videoTasks,0);
   const taskResourcePending=result.count>taskVideoTasks || result.fresh.some(r=>r.lesson?.mediaPending && (!r.lesson.mediaBlockers.length || r.lesson.mediaBlockers.some(item=>item.kind!=='video')));
-  const taskReady=taskCompleted && !result.blocked && !quizzes.length && !lessonPendingTasks && !taskResourcePending && !result.fresh.some(r=>r.lesson?.loadingImages) && Date.now()-s.changedAt>=4000;
+  const taskReady=taskCompleted && !result.blocked && !quizzes.length && !lessonPendingTasks && !taskResourcePending && Date.now()-s.changedAt>=4000;
   return { allowed: s.allowed, running: s.running, incognito:s.incognito, courseId:s.courseId,courseKey:s.courseKey,mode: s.mode, autoNext: s.autoNext,
-    muted: s.muted, resume: s.resume, playbackRate: s.playbackRate, reason: s.reason, epoch: s.epoch,
+    muted: s.muted, resume: s.resume, playbackRate: s.playbackRate, autoContinue:s.autoContinue, continuationPending:result.fresh.some(r=>r.continuation), reason: s.reason, epoch: s.epoch,
     generation: s.generation, autoQuiz:s.autoQuiz, randomFallback:s.randomFallback, foregroundCompat:s.foregroundCompat, mouseGuard:s.mouseGuard, automation:s.automation || null, quizDetected: quizzes.length > 0, quizDone,
     quizCount: quizzes.reduce((sum, r) => sum + r.quiz.count, 0),
     quizUnsupported:quizzes.reduce((sum,r)=>sum+r.quiz.unsupported,0),
     lessonDetected:lessons.length>0,lessonReady:lessons.length>0 && lessons.every(r=>r.lesson.ready) && !lessonPendingTasks && !lessonMediaPending && !result.blocked && result.count===0 && !quizzes.length && Date.now()-s.changedAt>=4000,
     lessonChars:lessons.reduce((sum,r)=>sum+r.lesson.chars,0),lessonImages:lessons.reduce((sum,r)=>sum+r.lesson.images,0),
     lessonPendingTasks,lessonMediaPending,lessonLoadingImages:lessons.some(r=>r.lesson.loadingImages),
+    lessonImageCounts:Object.fromEntries(['loaded','loading','failed','deferred'].map(key=>[key,lessons.reduce((sum,r)=>sum+(r.lesson.imageCounts?.[key] || 0),0)])),
     lessonMediaReasons:[...new Set(result.fresh.flatMap(r=>(r.lesson?.mediaBlockers || []).map(b=>`${r.frameId}:${b.kind}`)))].slice(0,20),
     lessonKey:lessons.map(r=>`${r.frameId}:${r.page}:${r.lesson.signature}:${r.lesson.ready}`).join('|'),
     taskDetected:tasks.length>0,taskCompleted,taskReady,taskResourcePending,
@@ -222,6 +224,12 @@ async function confirmQuiz(s,sender) {
   if(snap.quizDone) {
     record.status='done';record.submitPhase='verified';record.message='平台已确认练习提交成功';await save();return {automation:record};
   }
+  const current=snap.reports.find(r=>r.quiz?.detected && !r.quiz.completed && r.quiz.count);
+  if(current && current.quiz.fingerprint!==record.fingerprint && Date.now()-s.changedAt>=4000) {
+    record.status='error';record.message='当前练习题目已变化，已结束旧提交等待；点击开始重新识别本页';
+    record.diagnostic={phase:'submission-context',expected:record.fingerprint,current:current.quiz.fingerprint,count:current.quiz.count};
+    s.running=false;s.mode='attention';s.reason=record.message;cancelJob(sender.tab.id);await save();return {automation:record};
+  }
   if(Date.now()-record.at>30000) {
     s.running=false;s.mode='attention';
     s.reason=record.submitPhase==='confirmation_clicked'?'确认提交已点击，但平台尚未确认成功；不会重复提交':'首次提交后未能完成确认，请检查页面弹窗；不会重复点击首次提交';
@@ -242,6 +250,7 @@ async function confirmQuiz(s,sender) {
 }
 async function handle(msg, sender) {
   await ready;
+  if(typeof msg.type==='string' && msg.type.startsWith('LAUNCH_'))return XXTLaunch.handle(msg,sender);
   const optionsUrl = chrome.runtime.getURL?.("options.html");
   if (optionsUrl && sender.url === optionsUrl && ["OPTIONS_GET", "OPTIONS_SAVE"].includes(msg.type)) return optionsMessage(msg);
   if (!sender.tab || !Number.isInteger(sender.frameId)) return { allowed: false };
@@ -346,9 +355,10 @@ async function handle(msg, sender) {
       frameId: sender.frameId, page: msg.page, at: Date.now(), videos,
       path: new URL(sender.url).pathname, blocked: String(msg.blocked || "").slice(0, 120),
       confirmation:!!msg.confirmation,
+      continuation:msg.continuation===true,
       playerSurface:!!msg.playerSurface,
       mouseApplied:!!msg.mouseApplied,
-      pauseSignal:['manual','viewport-exit','window-blur','document-hidden','unknown'].includes(msg.pauseSignal)?msg.pauseSignal:'',
+      pauseSignal:['manual','viewport-exit','window-blur','document-hidden','continuation','unknown'].includes(msg.pauseSignal)?msg.pauseSignal:'',
       visibility:['visible','hidden'].includes(msg.visibility)?msg.visibility:'unknown',
       lesson:{detected:!!msg.lesson?.detected,ready:!!msg.lesson?.ready,
         chars:Math.min(100000,Math.max(0,Number(msg.lesson?.chars)||0)),images:Math.min(1000,Math.max(0,Number(msg.lesson?.images)||0)),
@@ -357,6 +367,7 @@ async function handle(msg, sender) {
       note: String(msg.note || "").slice(0, 120)
     });
     const lesson=s.reports.get(sender.frameId).lesson;
+    lesson.imageCounts=Object.fromEntries(['loaded','loading','failed','deferred'].map(key=>[key,Math.min(1000,Math.max(0,Math.floor(Number(msg.lesson?.imageCounts?.[key]) || 0)))]));
     const number=value=>Math.min(100,Math.max(0,Math.floor(Number(value)||0)));
     const rawTask=msg.task || {};
     const task={detected:!!rawTask.detected,total:number(rawTask.total),done:number(rawTask.done),pending:number(rawTask.pending),unknown:number(rawTask.unknown),videoTasks:number(rawTask.videoTasks),
@@ -374,7 +385,7 @@ async function handle(msg, sender) {
     quiz.fingerprint=String(msg.quiz?.fingerprint || '').slice(0,80);
     quiz.evidence=['answer-review','status-marker','completion-message'].includes(msg.quiz?.evidence)?msg.quiz.evidence:'';
     if(quiz.completed && pendingSubmission(s.automation) && (quiz.fingerprint===s.automation.fingerprint || !quiz.count)) {
-      s.automation.status='done';s.automation.submitPhase='verified';s.automation.message='平台已确认练习提交成功';s.reason='运行中';await save();
+      s.automation.status='done';s.automation.submitPhase='verified';s.automation.message='平台已确认练习提交成功';s.reason=s.running?'运行中':'平台已确认提交成功；点击开始继续';await save();
     }
     if (msg.blocked && s.running) {
       aiJobs.get(sender.tab.id)?.controller.abort();
@@ -386,6 +397,7 @@ async function handle(msg, sender) {
   }
   if (msg.type === "CONTROL" && sender.frameId === 0 && msg.page === s.page) {
     if (msg.action === "start") {
+      if(msg.launchId && !XXTLaunch.canStart(sender,msg.launchId))return {...snapshot(s),error:'启动流程已停止，请手动开始'};
       const other = [...sessions.entries()].find(([id, session]) => id !== sender.tab.id && session.incognito===s.incognito && session.allowed && session.running);
       if (other) {
         s.running=false;s.mode='attention';
@@ -402,11 +414,13 @@ async function handle(msg, sender) {
       s.epoch += 1;
       s.reason = "运行中";
     } else if (msg.action === "pause") {
+      await XXTLaunch.cancelForTab(sender.tab.id,s.incognito);
       aiJobs.get(sender.tab.id)?.controller.abort();
       s.running = false;
       s.mode = "paused";
       s.reason = "已暂停；点击开始继续";
     } else if (msg.action === "stop") {
+      await XXTLaunch.cancelForTab(sender.tab.id,s.incognito);
       cancelJob(sender.tab.id);
       s.running = false;
       s.mode = "stopped";
@@ -416,7 +430,7 @@ async function handle(msg, sender) {
       s.mode = "attention";
       s.reason = String(msg.reason || "需要手动处理").slice(0, 120);
     }
-    for (const key of ["autoNext", "muted", "resume", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) {
+    for (const key of ["autoNext", "muted", "resume", "autoQuiz", "randomFallback", "autoContinue", "foregroundCompat", "mouseGuard"]) {
       if (typeof msg[key] === "boolean") s[key] = msg[key];
     }
     if(msg.autoQuiz===false) aiJobs.get(sender.tab.id)?.controller.abort();
@@ -440,6 +454,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 });
 chrome.tabs.onRemoved.addListener(async tabId => {
   await ready;
+  await XXTLaunch.closedTab(tabId);
   sessions.delete(tabId);
   cancelJob(tabId);
   await save();

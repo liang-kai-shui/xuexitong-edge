@@ -3,10 +3,10 @@
   "use strict";
   const PLAYBACK_RATES = Object.freeze([0, 1, 1.25, 1.5, 1.75, 2]);
   const validRate = value => PLAYBACK_RATES.includes(value);
-  function courseInfo(raw) {
+  function parseCourse(raw, entry) {
     try {
       const url = new URL(raw);
-      if(url.protocol!=='https:' || url.username || url.password || !/(^|\.)chaoxing\.com$/.test(url.hostname) || !/\/mycourse\/(studentstudy|stu)\/?$/.test(url.pathname))return null;
+      if(url.protocol!=='https:' || url.username || url.password || !/(^|\.)chaoxing\.com$/.test(url.hostname) || !(entry?(/\/mycourse\/stu\/?$/.test(url.pathname) || /^\/visit\/stucoursemiddle\/?$/.test(url.pathname)):/\/mycourse\/(studentstudy|stu)\/?$/.test(url.pathname)))return null;
       const values=names=>[...new Set([...url.searchParams].filter(([key])=>names.includes(key.toLowerCase())).map(([,value])=>value))];
       const ids=values(['courseid']),classes=values(['clazzid','classid']);
       const valid=value=>/^[1-9]\d{0,19}$/.test(value);
@@ -14,6 +14,8 @@
       return {courseId:ids[0],classId:classes[0] || '',key:`${ids[0]}:${classes[0] || ''}`};
     } catch { return null; }
   }
+  const courseInfo=raw=>parseCourse(raw,false);
+  const courseEntry=raw=>parseCourse(raw,true);
   const coursePage=raw=>!!courseInfo(raw);
   function select(reports, now) {
     const fresh = reports.filter(r => now - r.at < 5000);
@@ -28,5 +30,5 @@
       fresh
     };
   }
-  globalThis.XXTPolicy = Object.freeze({ PLAYBACK_RATES, validRate, courseInfo, coursePage, select });
+  globalThis.XXTPolicy = Object.freeze({ PLAYBACK_RATES, validRate, courseInfo, courseEntry, coursePage, select });
 })();

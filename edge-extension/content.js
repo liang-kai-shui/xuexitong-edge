@@ -22,6 +22,7 @@
   let lessonSince=0,lessonKey='';
   let taskSince=0,taskKey='';
   let panelUiCleanup=null;
+  let continuationAttempt=null,lastContinuationClick=-Infinity;
   const logs = [];
   const send = data => chrome.runtime.sendMessage({ channel: "xxt-player-v1", page, ...data });
   const notePageEvent=type=>{recentPageEvent={type,at:performance.now()};};
@@ -40,7 +41,7 @@
     return css.display !== "none" && css.visibility !== "hidden" && css.opacity !== "0" && el.getClientRects().length > 0;
   }
   function blocker() {
-    return XXTQuiz.blocker(submissionInProgress || state?.autoQuiz && state?.running);
+    return XXTQuiz.blocker(submissionInProgress || state?.autoQuiz && state?.running,true);
   }
   async function pageAction(kind,target,text) {
     const token=crypto.randomUUID();
@@ -49,7 +50,7 @@
     finally { target.removeAttribute('data-xxt-action'); }
   }
   async function runAutomation() {
-    if(autoPending || aiBusy) return;
+    if(autoPending || aiBusy || state?.continuationPending) return;
     autoPending=true;
     try {
       const result=await send({type:['awaiting_confirmation','confirming','submitted'].includes(state?.automation?.status)?'CONFIRM_PENDING':'AUTO_QUIZ'});
@@ -57,6 +58,21 @@
       else if(result.automation?.message) log(result.automation.message);
     } catch { log('自动答题连接中断，正在等待扩展状态'); }
     finally { autoPending=false; }
+  }
+  async function continueLearning(gate) {
+    if(!gate.isConnected || !visible(gate) || !state?.running || !state.autoContinue || blocker() || state.reports?.some(r=>r.blocked))return;
+    const now=Date.now();
+    if(continuationAttempt?.gate===gate) {
+      if(now-continuationAttempt.at>=5000)await attention('点击继续学习后提示仍未消失，已停止重试；请手动检查');
+      return;
+    }
+    if(now-lastContinuationClick<5000) {await attention('继续学习提示短时间反复出现，已停止自动点击；请手动检查');return;}
+    const target=gate.closest('button,a,[role="button"],[onclick]') || gate;
+    if(target.disabled || target.hasAttribute('disabled') || target.getAttribute('aria-disabled')==='true' || getComputedStyle(target).pointerEvents==='none') {
+      await attention('继续学习按钮暂不可用，请手动检查');return;
+    }
+    continuationAttempt={gate,at:now};lastContinuationClick=now;
+    target.click();log('已自动点击播放器“继续学习”，等待提示消失');
   }
   function track() {
     for (const [v] of tracked) if (!v.isConnected) tracked.delete(v);
@@ -71,7 +87,7 @@
         info.lastTime = now;
       });
       v.addEventListener("ended", () => {
-        if(blocker()) { info.completed=false;void tick();return; }
+        if(blocker() || XXTQuiz.continuation()) { info.completed=false;void tick();return; }
         if ((info.progressed || info.seenPlaying) && Number.isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration - 1) {
           info.completed = true;
           info.note = "已正常播放结束";
@@ -79,12 +95,13 @@
         }
       });
       v.addEventListener("pause", () => {
+        const gate=XXTQuiz.continuation();
         if(state?.running && !v.ended) {
-          pauseSignal=performance.now()-lastUserInput<600?'manual':pageVisibility()==='hidden'?'document-hidden':performance.now()-recentPageEvent.at<1500?recentPageEvent.type:'unknown';
+          pauseSignal=gate?'continuation':performance.now()-lastUserInput<600?'manual':pageVisibility()==='hidden'?'document-hidden':performance.now()-recentPageEvent.at<1500?recentPageEvent.type:'unknown';
           info.note='视频已暂停';
           void tick();
         }
-        if (state?.running && !v.ended && performance.now() - lastUserInput < 600) {
+        if (state?.running && !v.ended && !gate && performance.now() - lastUserInput < 600) {
           info.manual = true;
           info.note = "已手动暂停；点击助手开始继续";
           void send({ type: "ATTENTION", reason: info.note });
@@ -119,7 +136,7 @@
     info.attempts.push(now);
     try {
       await v.play();
-      if(!state?.running || blocker()) {v.pause();return;}
+      if(!state?.running || blocker() || XXTQuiz.continuation()) {v.pause();return;}
       info.owned = true;
       info.note = "播放中";
     } catch (error) {
@@ -132,6 +149,7 @@
     } finally { info.pending = false; }
   }
   function resetPage() {
+    continuationAttempt=null;
     lessonSince=0;lessonKey='';
     taskSince=0;taskKey='';
     candidateSince = 0;
@@ -147,7 +165,7 @@
     log(reason);
   }
   async function performNavigation(target, label,allowCatalogFallback=true) {
-    const blocked=blocker() || state?.reports?.find(r=>r.blocked)?.blocked;
+    const blocked=blocker() || state?.reports?.find(r=>r.blocked)?.blocked || (XXTQuiz.continuation() || state?.continuationPending ? '播放器继续学习提示尚未处理，请稍后再切换章节' : '');
     if(blocked) {await attention(blocked);return;}
     const catalogTarget = target?.matches('#coursetree .posCatalog_name');
     if (!target || (!visible(target) && !catalogTarget) || target.disabled || target.getAttribute('aria-disabled') === 'true') {
@@ -160,7 +178,7 @@
     log(label + "；等待页面切换");
   }
   async function navigate() {
-    if (!state.running || !state.autoNext || aiBusy || autoPending) { candidateSince = 0;lessonSince=0;taskSince=0;return; }
+    if (!state.running || !state.autoNext || state.continuationPending || aiBusy || autoPending) { candidateSince = 0;lessonSince=0;taskSince=0;return; }
     if (pendingNav) {
       if (Date.now() < pendingNav.until) return;
       const fallback = pendingNav.allowCatalogFallback && (!state.quizDetected || state.quizDone) && XXTNavigation.next(true);
@@ -175,6 +193,7 @@
       }
       return;
     }
+    if(state.lessonDetected && !state.quizDetected && state.lessonImageCounts?.failed)detail.textContent+=' 有 '+state.lessonImageCounts.failed+' 张讲义配图加载失败。';
     if(state.taskDetected && !state.quizDetected) {
       const practice=XXTNavigation.practiceStep();
       if(state.taskReady && practice && !nextAttempted) {
@@ -217,13 +236,14 @@
       h3{font-size:15px;margin:0;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shortTitle{display:none}:host([data-minimized="true"]) .fullTitle{display:none}:host([data-minimized="true"]) .shortTitle{display:inline}
       #panelBody{padding:0 15px 15px;overflow:auto;min-height:0}#panelBody[hidden]{display:none}#minimize{margin:0;padding:2px;width:28px;height:28px;flex-shrink:0;font-size:18px;line-height:1}
       p{margin:6px 0;overflow-wrap:anywhere}button{cursor:pointer;padding:7px 11px;margin:4px 4px 4px 0;border:1px solid #bccbdc;border-radius:6px;background:#eef3fa;color:#182335}#start{background:#235de4;color:#fff}label{display:block;margin:4px 0}input{vertical-align:middle}details{margin-top:8px}pre{font:11px/1.5 monospace;max-height:130px;overflow:auto;white-space:pre-wrap}.muted{color:#627086;font-size:12px}
-      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.7.8</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
+      </style><section><header id="panelHeader" title="拖动标题栏移动助手"><h3><span class="fullTitle">学习通视频播放助手</span><span class="shortTitle">学习通助手</span> <small>v1.8.3</small></h3><button id="minimize" type="button" aria-label="最小化助手" aria-expanded="true" aria-controls="panelBody" title="最小化">−</button></header><div id="panelBody"><p id="status" role="status">正在连接扩展…</p><p id="detail" class="muted"></p>
       <div><button id="start">开始 / 继续</button><button id="pause">暂停</button><button id="stop">停止</button></div>
       <button id="next">下一步 / 下一节</button>
       <label>播放倍速 <select id="playbackRate" aria-label="播放倍速"><option value="0">跟随播放器</option><option value="1">1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">2 倍</option></select></label>
       <label><input id="resume" type="checkbox" checked> 意外暂停后续播（包含鼠标移出）</label>
+      <label><input id="autoContinue" type="checkbox" checked> 自动点击播放器“继续学习”</label>
       <label><input id="mouseGuard" type="checkbox" checked> 拦截播放器鼠标离开暂停（实验）</label><p class="muted">可能影响控制栏自动隐藏；关闭此项即可恢复。</p>
-      <label><input id="foregroundCompat" type="checkbox"> 前台读取兼容（实验）</label><p class="muted">仅兼容播放器的部分可见性／焦点读取；不置顶窗口，学习确认提示仍需手动处理。</p>
+      <label><input id="foregroundCompat" type="checkbox"> 前台读取兼容（实验）</label><p class="muted">仅兼容播放器的部分可见性／焦点读取；不置顶窗口；继续学习确认由上方开关控制。</p>
       <label><input id="autoNext" type="checkbox" checked> 自动进入后续步骤 / 下一节</label>
       <label><input id="autoQuiz" type="checkbox" checked> 全自动答题并提交（含简答题）</label>
       <label><input id="randomFallback" type="checkbox" checked> 失败题随机选择（不含简答题）</label>
@@ -273,7 +293,7 @@
       render();
       void tick();
     };
-    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) root.querySelector(`#${key}`).onchange = async e => {
+    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "autoContinue", "foregroundCompat", "mouseGuard"]) root.querySelector(`#${key}`).onchange = async e => {
       state = await send({ type: "CONTROL", [key]: e.target.checked });
       render();
     };
@@ -285,8 +305,8 @@
       void tick();
     };
     root.querySelector("#copy").onclick = async () => {
-      const clean = { version: "1.7.8",courseId:state?.courseId, incognito:state?.incognito, running: state?.running, autoQuiz:state?.autoQuiz,randomFallback:state?.randomFallback, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
-        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, blocked, note })), logs };
+      const clean = { version: "1.8.3",courseId:state?.courseId, incognito:state?.incognito, running: state?.running, autoQuiz:state?.autoQuiz, autoContinue:state?.autoContinue,randomFallback:state?.randomFallback, mouseGuard:state?.mouseGuard,mouseApplied, automation:state?.automation, playbackRate: state?.playbackRate, reason: state?.reason,
+        reports: state?.reports?.map(({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, continuation, blocked, note }) => ({ frameId, path, videos, quiz, lesson, task, mouseApplied, pauseSignal, visibility, confirmation, continuation, blocked, note })), logs };
       try { await navigator.clipboard.writeText(JSON.stringify(clean, null, 2)); log("诊断已复制，不含链接参数或 Cookie"); }
       catch { log("复制失败，请手动选取日志文字"); }
     };
@@ -305,17 +325,31 @@
     if (state.quizDetected) panel.shadowRoot.querySelector('#quizPanel').open = true;
     const resourceNames={'video':'视频','audio':'音频','video-frame':'视频页面','audio-frame':'音频页面','pdf-frame':'PDF 页面','ppt-frame':'演示文稿页面','book-frame':'电子书页面','pdf-object':'PDF 文档','pdf-embed':'PDF 文档','pdf-iframe':'PDF 页面','document-frame':'文档阅读器','embedded-content':'讲义内嵌内容'};
     const resourceText=[...new Set((state.lessonMediaReasons || []).map(reason=>resourceNames[reason.split(':').pop()] || '未分类资源'))].join('、') || '未分类资源（请刷新课程页更新识别）';
-    if(state.lessonDetected && !state.quizDetected && !state.count)detail.textContent=`图文讲义约 ${state.lessonChars} 字、${state.lessonImages} 张图片。${state.lessonPendingTasks?'存在未完成任务点，等待原页面完成。':state.lessonMediaPending?`检测到仍需处理的资源：${resourceText}。`:state.lessonLoadingImages?'图片尚未加载完整。':XXTNavigation.practiceStep()?'页面稳定后进入紧接的练习页签；不会将讲义标记为已完成。':'没有紧接的练习页签，请手动选择学习步骤。'}`;
+    if(state.lessonDetected && !state.quizDetected && !state.count)detail.textContent=`图文讲义约 ${state.lessonChars} 字、${state.lessonImages} 张图片。${state.lessonPendingTasks?'存在未完成任务点，等待原页面完成。':state.lessonMediaPending?`检测到仍需处理的资源：${resourceText}。`:state.lessonLoadingImages?'正文已可读；配图未完全加载不影响进入练习。':XXTNavigation.practiceStep()?'页面稳定后进入紧接的练习页签；不会将讲义标记为已完成。':'没有紧接的练习页签，请手动选择学习步骤。'}`;
+    if(state.lessonDetected && !state.quizDetected && state.lessonImageCounts?.failed)detail.textContent+=' 有 '+state.lessonImageCounts.failed+' 张讲义配图加载失败。';
     if(state.taskDetected && !state.quizDetected) {
       if(state.running)status.textContent=state.taskCompleted?(state.taskReady?(state.autoNext?'当前任务点已完成，准备进入本节练习':'当前任务点已完成，自动继续已关闭'):'任务点已完成，等待资源或状态稳定'):'当前任务点尚未完成，等待平台完成标记';
       detail.textContent+=` 当前平台任务点：${state.taskDone}/${state.taskTotal} 已完成。${state.taskCompleted&&!XXTNavigation.practiceStep()?'未找到紧接的练习页签，请手动选择。':''}`;
     }
+    if(state.running && state.continuationPending)status.textContent='正在处理播放器继续学习提示，等待确认后续播';
     if(state.automation?.randomCount)detail.textContent+=` 本次含 ${state.automation.randomCount} 道随机兜底，可能错误。`;
     if(state.running && state.waitingForVisible && !state.quizDetected)status.textContent=state.resume?'页面在后台且视频已暂停；恢复窗口后继续':'页面在后台且视频已暂停；自动续播已关闭';
     const notes = (state.reports || []).map(r => r.note).filter(Boolean);
     if (notes.length) detail.textContent += " " + [...new Set(notes)].join("；");
-    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
+    for (const key of ["resume", "autoNext", "muted", "autoQuiz", "randomFallback", "autoContinue", "foregroundCompat", "mouseGuard"]) panel.shadowRoot.querySelector(`#${key}`).checked = state[key];
     panel.shadowRoot.querySelector("#playbackRate").value = String(state.playbackRate);
+  }
+  let startupBusy=false;
+  async function tryStartup(){
+    if(!topFrame || !state?.allowed || state.running || startupBusy)return;
+    startupBusy=true;
+    try{
+      const launch=await send({type:'LAUNCH_AUTOSTART'});
+      if(launch?.start){
+        state=await send({type:'CONTROL',action:'start',launchId:launch.id});
+        await send({type:'LAUNCH_STARTED',id:launch.id,ok:state?.running===true && !state?.error});
+      }
+    }finally{startupBusy=false;}
   }
   async function tick() {
     if (busy) return;
@@ -341,14 +375,16 @@
           state = await send({ type: 'CONTEXT', context });
         }
       }
+      if(topFrame)await tryStartup();
       track();
-      const blocked = blocker();
-      if(blocked && state?.allowed) {
+      const blocked = blocker(),gate=XXTQuiz.continuation();
+      if(!gate)continuationAttempt=null;
+      if((blocked || gate) && state?.allowed) {
         // Stop locally before waiting for the coordinator. Acknowledgement
         // overlays must not be counteracted by repeated play() calls.
         for(const [v,info] of tracked) {
           if(!v.paused) v.pause();
-          info.completed=false;info.note='已暂停：'+blocked;
+          info.completed=false;info.note='已暂停：'+(blocked || '正在处理继续学习提示');
         }
       }
       const quiz = XXTQuiz.scan();
@@ -376,6 +412,7 @@
         lesson,
         task,
         confirmation:!!confirm,
+        continuation:!!gate,
         quiz: { detected: quiz.detected, count: quiz.count, completed: quiz.completed, evidence:quiz.evidence, total:quiz.total, unsupported:quiz.unsupported, unsupportedDetails:quiz.unsupportedDetails, fingerprint:quiz.fingerprint },
         note: [...tracked.values()].map(v => v.note).join("；") });
       const wantForeground=!!(state?.allowed && state.running && state.foregroundCompat && videos.length && !state.taskCompleted && !state.quizDetected && !blocked);
@@ -391,21 +428,31 @@
         else log(result.error || '鼠标离开拦截未生效');
       }
       if (!state?.allowed) return;
+      if (lastEpoch !== state.epoch) {
+        lastEpoch = state.epoch; continuationAttempt=null;lastContinuationClick=-Infinity;
+        for (const info of tracked.values()) { info.manual = false; info.attempts = []; }
+      }
+      if(gate) {
+        if(state.running && !blocked) {
+          if(state.autoContinue)await continueLearning(gate);
+          else await attention('播放器要求确认继续学习；请先手动点击原播放器的“继续学习”，再点助手开始');
+        }
+        if(topFrame)render();
+        return;
+      }
       if (topFrame) {
         const reportShape = JSON.stringify((state.reports || []).filter(r => r.videos.length || r.quiz?.detected).map(r => [r.frameId, r.page, r.videos.map(v => v.id), r.quiz?.detected]));
         if (pendingNav && pendingNav.reports !== reportShape && (state.count || state.quizDetected)) resetPage();
         lastReportShape = reportShape;
       }
-      if (lastEpoch !== state.epoch) {
-        lastEpoch = state.epoch;
-        for (const info of tracked.values()) { info.manual = false; info.attempts = []; }
-      }
+
       const eligible = [...tracked].find(([, info]) => !info.completed);
       for (const [v, info] of tracked) {
         if (!state.running || blocked || state.quizDetected) {
           if (!v.paused && (blocked || wasRunning || state.mode === "paused" || state.mode === "attention")) v.pause();
           continue;
         }
+        if(state.continuationPending) {if(!v.paused)v.pause();info.note='等待播放器继续学习提示处理';continue;}
         if(state.taskCompleted) {if(info.owned && !v.paused)v.pause();continue;}
         if (state.thisFrame !== state.activeFrame || eligible?.[0] !== v || info.completed) {
           if (info.owned && !v.paused) v.pause();
@@ -460,6 +507,7 @@
       state = await send({ type: "HELLO" });
       if (!state?.allowed) return;
       mount();
+      await tryStartup();
       log(`已就绪；当前课程 ${state.courseId || XXTPolicy.courseInfo(location.href)?.courseId || '学习页面'}`);
     }
     await tick();

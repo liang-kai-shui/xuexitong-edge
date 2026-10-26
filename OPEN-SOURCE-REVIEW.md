@@ -56,3 +56,11 @@
 本版采用独立实现的 Canvas 字形图像和视觉转录流程，没有引入 OCS 的位图特征库或远程脚本。依据 [DeepSeek 视觉接口](https://api-docs.deepseek.com/guides/vision/) 使用 `deepseek-flash` 图像输入；依据 [思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/) 配置 enabled 与 low/high/max。开启思考不能修复错误输入，必须先读对题。
 
 “前台读取兼容”只修改实例读取，保留原生原型和真实事件。页面缓存的原生方法、其他 realm、浏览器冻结和服务端行为判断仍可得到不同信息。作用范围参考 [Page Visibility](https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilityState) 和 [hasFocus](https://developer.mozilla.org/en-US/docs/Web/API/Document/hasFocus)；不据此宣称始终处于真实前台或不可检测。
+
+## 1.8.0 启动导航参考
+
+2026-10-26 参考 [DanMo661/Xuexitong-mcp 的公开 DOM 说明](https://github.com/DanMo661/Xuexitong-mcp/blob/main/README.md)：课程标题位于 course-name，章节行使用 chapter_item，目录的 icon_yiwanc 表示完成、catalog_points_yi 数字表示待完成数量。仅借鉴公开页面结构，启动导航独立实现；没有使用其登录接口、加密流程、Cookie 提取或服务端任务接口。登录与课程选择在用户自己的 Edge 页面完成。真实账号端到端流程尚待用户验证。
+
+## 1.8.3 用户课程入口适配
+
+依据用户直接提供的课程封面链接，个人空间会先打开 /visit/stucoursemiddle，再由原站转向课程概览。扩展独立增加此入口分类，不把中转页面视为学习页，不重建或记录 cpi/enc 链接参数。

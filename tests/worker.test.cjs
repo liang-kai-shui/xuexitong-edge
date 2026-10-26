@@ -245,7 +245,6 @@ test('completed task navigation holds for extra resources, pending frames, quizz
     {videos:[],lesson:{mediaPending:true,mediaBlockers:[{kind:'pdf-object',tag:'object'}]}},
     {videos:[],lesson:{mediaPending:true,mediaBlockers:[{kind:'video-frame',tag:'iframe'}]}},
     {videos:[],lesson:{mediaPending:true}},
-    {videos:[],lesson:{loadingImages:true}},
     {videos:[],quiz:{detected:true,count:1}},
     {videos:[],blocked:'请完成验证码'}
   ]) {
@@ -902,4 +901,63 @@ test('fill failures identify the question and cause instead of only a generic in
   const original=f.context.chrome.tabs.sendMessage;
   f.context.chrome.tabs.sendMessage=async(tab,msg,target)=>msg.type==='QUIZ_APPLY'?{applied:1,total:2,failed:['q2'],details:[{id:'q2',ok:false,code:'SYNC_FIELD_MISMATCH',reason:'简答提交字段尚未同步',diagnostic:{expectedChars:10,fieldChars:0}}]}:original(tab,msg,target);
   const response=await f.send({type:'AUTO_QUIZ'});assert.match(response.error,/q2.*提交字段尚未同步/);assert.equal(response.automation.fillDiagnostic[0].code,'SYNC_FIELD_MISMATCH');
+});
+
+
+test('automatic continuation is default-on, top-frame-controlled and persisted across worker restart',async()=>{
+  const f=fixture();assert.equal((await f.send({type:'HELLO'})).autoContinue,true);
+  assert.equal((await f.send({type:'CONTROL',autoContinue:false},2)).autoContinue,true);
+  await f.send({type:'CONTROL',autoContinue:false});assert.equal((await fixture(f.store).send({type:'HELLO'})).autoContinue,false);
+});
+test('continuation pending is isolated by tab and expires with its source report',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});await f.send({type:'HELLO'},0,2);
+  assert.equal((await f.send({type:'REPORT',videos:[],continuation:true},2)).continuationPending,true);
+  assert.equal((await f.send({type:'REPORT',videos:[]},0,2)).continuationPending,false);
+  f.advance(6000);assert.equal((await f.send({type:'REPORT',videos:[]})).continuationPending,false);
+});
+test('a late completed review verifies submission without undoing an explicit stopped state',async()=>{
+  const {f,counts,report}=automaticFixture();await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});await report();await f.send({type:'AUTO_QUIZ'});
+  f.advance(31000);await f.send({type:'CONFIRM_PENDING'});assert.equal((await f.send({type:'REPORT',videos:[]})).running,false);
+  const state=await f.send({type:'REPORT',page:'quiz',videos:[],quiz:{detected:true,count:0,total:1,completed:true,fingerprint:'review',evidence:'answer-review'}},2);
+  assert.equal(state.automation.status,'done');assert.equal(state.running,false);assert.match(state.reason,/点击开始/);assert.equal(counts.submit,1);
+});
+
+test('changed editable questions end stale submission waiting without automatically resubmitting',async()=>{
+  const {f,counts,report}=automaticFixture();await f.send({type:'HELLO'});await f.send({type:'CONTROL',action:'start'});await report();await f.send({type:'AUTO_QUIZ'});
+  await f.send({type:'CONTEXT',context:'another-lesson'});f.advance(4100);
+  await f.send({type:'REPORT',page:'new-quiz',videos:[],quiz:{detected:true,count:5,total:5,completed:false,fingerprint:'different-questions'}},2);
+  f.advance(4100);await f.send({type:'REPORT',page:'new-quiz',videos:[],quiz:{detected:true,count:5,total:5,completed:false,fingerprint:'different-questions'}},2);
+  const result=await f.send({type:'CONFIRM_PENDING'});assert.equal(result.automation.status,'error');assert.match(result.automation.message,/题目已变化/);
+  const state=await f.send({type:'REPORT',videos:[]});assert.equal(state.running,false);assert.equal(counts.submit,1);assert.equal(counts.api,1);
+});
+
+
+test('native completed zero-duration video can enter practice despite incomplete lecture illustrations',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});
+  const card={videos:[],task:completedTask,lesson:{detected:true,ready:false,chars:1706,images:4,loadingImages:true,imageCounts:{loading:1,loaded:3},pendingTasks:false,mediaPending:false}};
+  const player={videos:[{completed:false,time:0,duration:0,paused:true}],lesson:{mediaPending:true,mediaBlockers:[{kind:'video',tag:'video'}]}};
+  await f.send({type:'REPORT',...card},2);await f.send({type:'REPORT',...player},3);f.advance(4100);
+  await f.send({type:'REPORT',...card},2);const s=await f.send({type:'REPORT',...player},3);
+  assert.equal(s.taskReady,true);assert.equal(s.taskCompleted,true);assert.equal(s.mediaDone,false);assert.equal(s.lessonLoadingImages,true);assert.equal(s.lessonImageCounts.loading,1);
+});
+test('lecture image counters are bounded and do not retain URLs or unknown fields',async()=>{
+  const f=fixture();await f.send({type:'HELLO'});
+  const s=await f.send({type:'REPORT',videos:[],lesson:{detected:true,ready:true,chars:1245,images:6,loadingImages:true,imageCounts:{loaded:9000,loading:-1,failed:2,deferred:1,source:'private-image-url'}}},2);
+  const lesson=s.reports[0].lesson;assert.equal(lesson.imageCounts.loaded,1000);assert.equal(lesson.imageCounts.loading,0);assert.equal(s.lessonReady,false);
+  assert.equal(JSON.stringify(lesson).includes('private-image-url'),false);
+  f.advance(4100);const ready=await f.send({type:'REPORT',videos:[],lesson:{detected:true,ready:true,chars:1245,images:6,loadingImages:true,imageCounts:{loaded:3,failed:2,deferred:1}}},2);
+  assert.equal(ready.lessonReady,true);assert.equal(ready.taskCompleted,false);
+});
+test('launcher handoff starts the existing worker only while its matching token is active',async()=>{
+  const f=fixture();f.context.crypto={randomUUID:()=> 'test-launch-flow'};f.context.chrome.tabs.create=async()=>({id:1});f.context.chrome.tabs.update=async()=>({id:1});
+  const ui={url:'chrome-extension://test/launcher.html'},course='https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid=212800861',study='https://mooc1.chaoxing.com/mycourse/studentstudy?courseId=212800861&chapterId=9',actor=url=>({url,frameId:0,tab:{id:1,url}});
+  let flow=await f.context.XXTLaunch.handle({type:'LAUNCH_BEGIN'},ui);
+  await f.context.XXTLaunch.handle({type:'LAUNCH_OPEN_COURSE',id:flow.id,url:course},actor('https://i.chaoxing.com/base'));
+  await f.context.XXTLaunch.handle({type:'LAUNCH_CHAPTER',id:flow.id,pending:2,chapterId:'9'},actor(course));
+  await f.send({type:'HELLO'},0,1,study);let claim=await f.send({type:'LAUNCH_AUTOSTART'},0,1,study);assert.equal(claim.start,true);
+  await f.context.XXTLaunch.handle({type:'LAUNCH_CANCEL'},ui);
+  let result=await f.send({type:'CONTROL',action:'start',launchId:claim.id},0,1,study);assert.equal(result.running,false);assert.match(result.error,/启动流程已停止/);
+  flow=await f.context.XXTLaunch.handle({type:'LAUNCH_BEGIN'},ui);await f.context.XXTLaunch.handle({type:'LAUNCH_OPEN_COURSE',id:flow.id,url:course},actor('https://i.chaoxing.com/base'));await f.context.XXTLaunch.handle({type:'LAUNCH_CHAPTER',id:flow.id,pending:1,chapterId:'9'},actor(course));
+  claim=await f.send({type:'LAUNCH_AUTOSTART'},0,1,study);result=await f.send({type:'CONTROL',action:'start',launchId:claim.id},0,1,study);assert.equal(result.running,true);
+  await f.send({type:'CONTROL',action:'pause'},0,1,study);assert.equal((await f.send({type:'LAUNCH_AUTOSTART'},0,1,study)).start,false);
 });

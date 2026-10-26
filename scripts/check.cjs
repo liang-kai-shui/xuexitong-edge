@@ -11,6 +11,7 @@ for (const directory of ['edge-extension', 'tests', 'scripts']) {
     if (/\.(?:js|cjs|mjs)$/.test(file)) execFileSync(process.execPath, ['--check', path.join(root, directory, file)], { stdio: 'inherit' });
   }
 }
-const entries = [manifest.background.service_worker, manifest.options_ui.page, ...manifest.content_scripts.flatMap(script => script.js)];
+const entries = ['launcher.html', 'launcher.js', manifest.background.service_worker, manifest.options_ui.page, ...manifest.content_scripts.flatMap(script => script.js)];
 for (const file of entries) if (!fs.existsSync(path.join(root, 'edge-extension', file))) throw new Error(`Missing manifest entry: ${file}`);
+if(!fs.readFileSync(path.join(root,'edge-extension','launcher.html'),'utf8').includes('data-version="'+manifest.version+'"'))throw new Error('Launcher and manifest versions differ');
 console.log(`Syntax, manifest entries and version ${manifest.version}: OK`);

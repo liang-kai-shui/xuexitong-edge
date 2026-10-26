@@ -68,8 +68,9 @@
       visible(el) && !el.closest('.xxt-ai-explanation') && /^(?:我的答案[：:]|我的答案$)/.test(compact(el.textContent)));
     const writable = item => !!item.editor || [...item.root.querySelectorAll('input:not([type="hidden"]),[role="radio"],[role="checkbox"]')].some(el =>
       visible(el) && !el.disabled && !el.readOnly && el.getAttribute('aria-disabled') !== 'true');
+    const pendingReview=[...document.querySelectorAll('span,p,div')].some(el=>visible(el) && !el.closest('.singleQuesId,.TiMu,[data-question-id],.question-item,.xxt-ai-explanation,#xxt-player-assistant') && /^(待批阅|待评分|批阅中|已批阅)$/.test(compact(el.textContent)));
     const review = items.length > 0 && items.every(item => answerLabel(item) && !writable(item)) &&
-      items.some(item => /(?:\d+(?:\.\d+)?\s*分|得分|待批阅|待评分|批阅中)/.test(nativeText(item.root))) &&
+      (pendingReview || items.some(item => /(?:\d+(?:\.\d+)?\s*分|得分|待批阅|待评分|批阅中)/.test(nativeText(item.root)))) &&
       ![...document.querySelectorAll('button,a,input[type="submit"],input[type="button"]')].some(el =>
         visible(el) && !el.disabled && /^(提交|提交作业|提交答案|重新提交)$/.test(compact(el.value || el.textContent)));
     const nativeStatus = [...document.querySelectorAll('.testTit_status_complete')].some(visible);
@@ -225,8 +226,7 @@
     }
     return null;
   }
-  function blocker(allowConfirmation = false) {
-    if(continuation()) return '播放器要求确认继续学习；请先手动点击原播放器的“继续学习”，再点助手开始';
+  function blocker(allowConfirmation = false, allowContinuation = false) {
     for (const el of document.querySelectorAll('[role="alert"],.risk-warning,.study-warning,.error-message,.alert-danger,.warnTip')) {
       if (!visible(el) || el.closest('.singleQuesId,.TiMu,.xxt-ai-explanation')) continue;
       const text=compact(el.innerText);
@@ -245,7 +245,7 @@
       if (el.matches('.ans-videoquiz') || el.matches('.ans-quiz') && document.querySelector('video')) return '检测到视频互动题';
       if (el.matches('.layui-layer,[role="dialog"]') && text) return '检测到弹窗，请先处理';
     }
-    return '';
+    return !allowContinuation && continuation() ? '播放器要求确认继续学习；请先手动点击原播放器的“继续学习”，再点助手开始' : '';
   }
   async function submit(fingerprint, answers, pageAction, canContinue) {
     const current = scan();

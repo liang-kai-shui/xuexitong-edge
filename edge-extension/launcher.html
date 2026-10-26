@@ -1,0 +1,9 @@
+<!doctype html><html lang="zh-CN" data-version="1.8.3"><head><meta charset="utf-8"><title>学习通 · 一键启动</title>
+<style>body{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:24px;background:#f4f6fb;color:#172338}main{padding:28px;background:white;border:1px solid #d8e0ed;border-radius:16px}h1{font-size:25px}input,select,button{font:inherit;padding:8px;margin:5px;border:1px solid #bdcbe0;border-radius:7px}button{cursor:pointer}button:disabled{opacity:.55;cursor:default}#begin{background:#245fdf;color:white}label{display:block;margin:14px 0}small{color:#5c6980}#status{padding:12px;background:#edf3ff;white-space:pre-wrap}#choices button{display:block;width:100%;text-align:left}</style></head><body><main>
+<h1>学习通一键启动 <small>v1.8.3</small></h1><p>打开登录页，你扫码或手动登录后，自动进入课程并选择第一个有待完成任务的章节。</p>
+<label>目标课程编号（可留空）<input id="courseId" inputmode="numeric" placeholder="仅一门课程时自动选择"></label>
+<label>登录页优先显示<select id="loginMode"><option value="qr">扫码登录</option><option value="account">账号登录（手动输入）</option></select></label>
+<button id="begin" disabled>启动登录和课程导航</button><button id="portal" disabled>我已登录，进入课程列表</button><button id="cancel" disabled>停止启动导航</button><button id="settings">DeepSeek 设置</button>
+<p id="status" role="status">启动页脚本尚未连接。若此提示不变，请从“启动学习.cmd”打开，并在 edge://extensions 重新加载扩展。</p><button id="retry">重新检查连接</button><button id="diagnostic">复制启动诊断</button> <a id="manage" href="edge://extensions/" target="_blank" rel="noopener">打开扩展管理页</a><div id="choices"></div><textarea id="diagnosticText" readonly hidden aria-label="启动诊断" style="width:95%;height:150px"></textarea>
+<small>不保存或读取账号密码，不保存登录二维码。扫码二维码直接显示在打开的 Edge 页面。多个账号使用不同的 Edge 配置文件；首次需在各配置文件加载扩展。验证码、人脸验证需要你处理。停止此处导航不会暂停已经启动的课程，请在课程浮窗暂停。</small>
+</main><script src="launcher.js"></script></body></html>

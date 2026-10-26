@@ -31,7 +31,7 @@ if(${process.argv.includes('--visibility-only')}) {
 let v=document.querySelector('video');
 function installVideo(video){
 v=video;fixture.paused=true;fixture.ended=false;fixture.time=0;
-Object.defineProperties(v,{paused:{get:()=>fixture.paused},ended:{get:()=>fixture.ended},duration:{get:()=>10},currentTime:{get:()=>fixture.time}});
+Object.defineProperties(v,{paused:{get:()=>fixture.paused},ended:{get:()=>fixture.ended},duration:{get:()=>fixture.duration??10},currentTime:{get:()=>fixture.time}});
 v.play=async()=>{fixture.plays++;fixture.paused=false;fixture.ended=false;v.dispatchEvent(new Event('playing'));};
 v.pause=()=>{fixture.paused=true;v.dispatchEvent(new Event('pause'));};
 }
@@ -70,9 +70,9 @@ fixture.shortAnswer=['冯·诺依曼计算机硬件系统由五大部件组成�
 window.fetch=async(url,options)=>{if(url!=='https://api.deepseek.com/chat/completions')return originalFetch(url,options);fixture.apiCalls++;const body=JSON.parse(options.body);const qs=JSON.parse(body.messages[1].content).questions;const malformed=fixture.injectBadIds&&!fixture.badInjected&&qs.length>1;if(malformed)fixture.badInjected=true;return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({answers:qs.map((q,i)=>({id:malformed&&i===qs.length-1?'q1':qs.length===1?'q1':Number(q.id.slice(1)),answer:q.type==='short'?fixture.shortAnswer:q.type==='multiple'?'AB':'A',reason:'本地模拟解析'}))})}}]}),{status:200,headers:{'Content-Type':'application/json'}});};
 window.importScripts=()=>{};
 </script>
-<script src="/policy.js"></script><script src="/deepseek.js"></script><script src="/page-action.js"></script><script src="/background.js"></script>
+<script src="/policy.js"></script><script src="/deepseek.js"></script><script src="/page-action.js"></script><script src="/launch-state.js"></script><script src="/background.js"></script>
 <script>window.XXTPolicy={...XXTPolicy,coursePage:()=>true};</script>
-<script src="/text.js"></script><script src="/question-image.js"></script><script src="/quiz.js"></script><script src="/lesson.js"></script><script src="/navigation.js"></script><script src="/panel-ui.js"></script>
+<script src="/text.js"></script><script src="/question-image.js"></script><script src="/quiz.js"></script><script src="/lesson.js"></script><script src="/navigation.js"></script><script src="/panel-ui.js"></script><script src="/startup-dom.js"></script>
 <script src="/content.js"></script>`;
 const popupFixture = `<!doctype html><meta charset="utf-8"><script src="/text.js"></script><script src="/quiz.js"></script><script src="/lesson.js"></script><script>
 let lastState=null;
@@ -92,7 +92,7 @@ const server = http.createServer((req, res) => {
   if (req.url === "/") { res.setHeader("content-type", "text/html; charset=utf-8"); return res.end(fixture); }
   if (req.url === '/popup-frame') {res.setHeader('content-type','text/html; charset=utf-8');return res.end(popupFixture);}
   const name = req.url.slice(1);
-  if (!["policy.js", "background.js", "content.js", "deepseek.js", "quiz.js", "lesson.js", "navigation.js", "panel-ui.js", "page-action.js", "text.js", "question-image.js"].includes(name)) { res.statusCode = 404; return res.end(); }
+  if (!["policy.js", "background.js", "content.js", "deepseek.js", "quiz.js", "lesson.js", "navigation.js", "panel-ui.js", "page-action.js", "text.js", "question-image.js", "launch-state.js", "startup-dom.js"].includes(name)) { res.statusCode = 404; return res.end(); }
   res.setHeader("content-type", "application/javascript; charset=utf-8");
   res.end(fs.readFileSync(path.join(root, "edge-extension", name)));
 });
@@ -149,6 +149,74 @@ async function main() {
   await waitFor("!!document.querySelector('#xxt-player-assistant')?.shadowRoot");
   const click = id => evaluate(`document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#${id}').click()`);
   const reason = text => `document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#status').textContent.includes(${JSON.stringify(text)})`;
+  if(process.argv.includes('--startup-only')) {
+    await evaluate(`window.startupFixture=document.createElement('section');document.body.append(startupFixture);startupFixture.innerHTML='<article class="course"><a href="https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid=42&clazzid=7&enc=fixture-secret"><h3 class="course-name">C language</h3></a><span>任务点进度:55/111</span></article><article class="course"><a href="https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid=43&clazzid=8">Math</a><span>任务点进度:10/10</span></article><a href="https://evil.test/mycourse/stu?courseid=99">invalid</a><button id="chapter-menu">章节</button><input type="password" value="never-read-password"><button id="qr-tab">扫码登录</button>';`);
+    assert.deepEqual(await evaluate('XXTStartupDOM.courses().map(({key,title,complete})=>({key,title,complete}))'),[{key:'42:7',title:'C language',complete:false},{key:'43:8',title:'Math',complete:true}]);
+    assert.equal(await evaluate('XXTStartupDOM.login().present'),true);
+    assert.equal(await evaluate('Object.keys(XXTStartupDOM.login()).sort().join()'),'present,qr');
+    assert.equal(await evaluate('XXTStartupDOM.chapterMenu().id'),'chapter-menu');
+    await evaluate(`startupFixture.innerHTML='<div class="chapter_item" data-knowledgeid="8"><span class="catalog_task"><i class="icon_yiwanc"></i></span><a class="catalog_name">done</a></div><div class="chapter_item" data-knowledgeid="9"><span class="catalog_task"><i class="catalog_points_yi">2</i></span><a class="catalog_name">pending</a></div><div class="chapter_item" data-knowledgeid="10"><span class="catalog_task">locked</span><a class="catalog_name">unknown</a></div><div style="display:none"><div class="chapter_item" data-knowledgeid="11"><span class="catalog_task"><i class="catalog_points_yi">1</i></span><a class="catalog_name">hidden pending</a></div></div>';fixture.chapterClicks=0;startupFixture.querySelector('[data-knowledgeid="9"] a').onclick=()=>fixture.chapterClicks++;`);
+    assert.deepEqual(await evaluate('XXTStartupDOM.chapters().map(({chapterId,done,pending,visible})=>({chapterId,done,pending,visible}))'),[{chapterId:'8',done:true,pending:0,visible:true},{chapterId:'9',done:false,pending:2,visible:true},{chapterId:'10',done:false,pending:0,visible:true},{chapterId:'11',done:false,pending:1,visible:false}]);
+    await evaluate('XXTStartupDOM.chapters().find(row=>row.pending>0).target.click()');assert.equal(await evaluate('fixture.chapterClicks'),1);
+    await evaluate(`const gate=document.createElement('div');gate.className='risk-warning';gate.textContent='请完成人脸身份验证';startupFixture.append(gate)`);assert.equal(await evaluate('XXTStartupDOM.verification()'),true);
+    assert.equal(await evaluate('fixture.apiCalls'),0);assert.equal(await evaluate('fixture.submits'),0);
+    console.log('PASS: native course/progress and chapter markers, hidden/unknown chapters, QR presence and verification stop; no credentials read, API calls or submissions');
+    await command('Browser.close');return;
+  }
+  if(process.argv.includes('--lecture-images-only')) {
+    await click('autoQuiz');
+    await evaluate("window.articleImages=(root,count)=>{for(let i=0;i<count;i++){const img=document.createElement('img');img.style.cssText='width:40px;height:40px';img.src='data:image/png;base64,AAAA';if(i>=4)img.loading='lazy';Object.defineProperty(img,'complete',{get:()=>i<2});Object.defineProperty(img,'naturalWidth',{get:()=>0});root.append(img);}};const video=document.querySelector('video'),card=document.createElement('article');card.className='ans-cc ans-attach-ct ans-job-finished';card.id='image-lecture';card.innerHTML='<span class=ans-job-icon>任务点已完成</span><p>'+('程序设计思想与计算机应用是本课程的学习内容。'.repeat(10))+'</p>';video.before(card);card.append(video);articleImages(card,4);fixture.duration=0;fixture.time=0;fixture.paused=true;const originalPractice=document.querySelector('#step-quiz').onclick;document.querySelector('#step-quiz').onclick=()=>{originalPractice();card.remove();};");
+    assert.equal(await evaluate('XXTLesson.scan().loadingImages'),true);
+    await click('start');await waitFor('fixture.stepClicks===1',16000);
+    await waitFor("document.querySelector('#xxt-player-assistant').shadowRoot.querySelector('#detail').textContent.includes('已识别章节测验')");
+    assert.equal(await evaluate('fixture.plays'),0,'native completed zero-duration video must not be restarted');
+    assert.equal(await evaluate('fixture.next'),0,'completed task must enter practice rather than skip the chapter');
+    await evaluate("document.querySelector('#prevNextFocusNext').click();document.querySelector('#image-lecture')?.remove();document.querySelector('video').remove();fixture.step='lesson';document.querySelector('#step-video').className='prev_blue';document.querySelector('#step-quiz').className='prev_white';const article=document.createElement('article');article.id='image-lecture';article.className='ans-cc';article.textContent='计算机对人类的发展和社会的进步产生了深刻的影响。'.repeat(10);document.body.append(article);articleImages(article,6)");
+    const rich=await evaluate('XXTLesson.scan()');assert.equal(rich.ready,true);assert.equal(rich.loadingImages,true);assert.deepEqual(rich.imageCounts,{loaded:0,loading:2,failed:2,deferred:2});
+    await evaluate("const task=document.createElement('div');task.id='unfinished-image-task';task.className='ans-attach-ct';task.innerHTML='<span class=ans-job-icon>任务点</span>';document.querySelector('#image-lecture').append(task)");
+    assert.equal(await evaluate('XXTLesson.scan().ready'),false,'unfinished task still blocks a text lecture');
+    await click('autoNext');await evaluate("document.querySelector('#unfinished-image-task').remove()");await delay(6200);
+    assert.equal(await evaluate('fixture.stepClicks'),1,'auto-next off must still hold');
+    await click('autoNext');await waitFor('fixture.stepClicks===2',16000);
+    assert.equal(await evaluate('fixture.next'),1);assert.equal(await evaluate('fixture.apiCalls'),0);
+    console.log('PASS: native completed zero-duration task and text lecture with failed/loading/lazy images enter practice; unfinished tasks and auto-next opt-out remain respected');
+    await command('Browser.close');return;
+  }
+  if(process.argv.includes('--auto-continue-only')) {
+    await click('autoNext');await click('start');await waitFor('!fixture.paused');
+    await evaluate("window.fixedGate=(keep=false)=>{const v=document.querySelector('video');let wrap=v.closest('.video-js');if(!wrap){wrap=document.createElement('div');wrap.className='video-js';v.before(wrap);wrap.append(v);}const b=document.createElement('button');b.id='fixed-gate';b.innerHTML='<span>继续学习</span>';wrap.append(b);b.onclick=()=>{fixture.gateClicks=(fixture.gateClicks||0)+1;fixture.pausedAtGateClick=fixture.paused;if(!keep)b.remove();};};fixture.gateClicks=0;fixedGate()");
+    await waitFor('fixture.gateClicks===1 && !fixture.paused');
+    assert.equal(await evaluate('fixture.pausedAtGateClick'),true);assert.equal(await evaluate('store.sessions[1].running'),true);
+    await delay(1400);assert.equal(await evaluate('fixture.gateClicks'),1);
+    await click('autoContinue');await evaluate('fixedGate()');await waitFor(reason('播放器要求确认'));
+    assert.equal(await evaluate('fixture.gateClicks'),1);assert.equal(await evaluate('fixture.paused'),true);
+    await evaluate("document.querySelector('#fixed-gate').remove()");await click('autoContinue');await click('start');await waitFor('!fixture.paused');
+    await evaluate("fixedGate();const gateCaptcha=document.createElement('div');gateCaptcha.id='captcha';gateCaptcha.textContent='安全验证';document.body.append(gateCaptcha)");
+    await waitFor(reason('验证'));assert.equal(await evaluate('fixture.gateClicks'),1);
+    await evaluate("document.querySelector('#fixed-gate').remove();document.querySelector('#captcha').remove()");await click('start');await waitFor('!fixture.paused');
+    await evaluate('fixedGate(true)');await waitFor('fixture.gateClicks===2');await waitFor(reason('提示仍未消失'),10000);
+    assert.equal(await evaluate('fixture.gateClicks'),2);assert.equal(await evaluate('fixture.paused'),true);
+    await click('start');await waitFor('fixture.gateClicks===3');await evaluate("document.querySelector('#fixed-gate').remove()");await waitFor('!fixture.paused');
+    await evaluate('fixedGate()');await waitFor(reason('短时间反复'));assert.equal(await evaluate('fixture.gateClicks'),3);
+    await evaluate("document.querySelector('#fixed-gate').remove()");await click('start');await waitFor('!fixture.paused');
+    await evaluate("fixedGate();document.querySelector('#fixed-gate').disabled=true");await waitFor(reason('按钮暂不可用'));assert.equal(await evaluate('fixture.gateClicks'),3);
+    assert.equal(await evaluate('fixture.apiCalls'),0);assert.equal(await evaluate('fixture.next'),0);
+    console.log('PASS: native continuation is clicked once and playback resumes; opt-out, captcha, stuck/repeated/disabled buttons stop without extra clicks');
+    await command('Browser.close');return;
+  }
+  if(process.argv.includes('--pending-review-only')) {
+    await click('autoQuiz');await evaluate("showQuiz();const label=document.createElement('span');label.id='pending-status';label.textContent='待批阅';document.querySelector('#quiz').prepend(label)");
+    assert.equal(await evaluate('XXTQuiz.scan().completed'),false,'pending header cannot complete an editable form');
+    await evaluate("const wrap=document.querySelector('#quiz');wrap.innerHTML='<span class=heading-status>待批阅</span><button>修改答案</button><div class=singleQuesId><div class=Zy_TItle><span class=fontLabel>简答题：简述指令和程序的区别？</span></div><div class=answer-box><strong>我的答案：</strong><p>指令是一个操作命令，程序是完成任务的有序指令集合。</p></div></div>';document.querySelector('#prevNextFocusNext').textContent='下一节'");
+    assert.equal(await evaluate('XXTQuiz.scan().completed'),true);assert.equal(await evaluate('XXTQuiz.scan().count'),0);assert.equal(await evaluate('XXTQuiz.scan().evidence'),'answer-review');
+    await evaluate("document.querySelector('.heading-status').textContent='';const b=document.createElement('p');b.className='xxt-ai-explanation';b.textContent='待批阅';document.querySelector('#quiz').append(b)");
+    assert.equal(await evaluate('XXTQuiz.scan().completed'),false,'assistant text is not native grading evidence');
+    await evaluate("document.querySelector('.xxt-ai-explanation').remove();document.querySelector('.heading-status').textContent='待批阅'");
+    await click('start');await waitFor('fixture.next===1',18000);await waitFor('!fixture.paused');
+    assert.equal(await evaluate('fixture.apiCalls'),0);assert.equal(await evaluate('fixture.submits'),0);
+    console.log('PASS: one read-only short answer with pending header and edit-answer button is submitted evidence; editable forms and assistant explanations remain excluded');
+    await command('Browser.close');return;
+  }
   if(process.argv.includes('--image-only')) {
     await click('autoNext');
     await evaluate(`(()=>{
@@ -353,6 +421,7 @@ async function main() {
     await command('Browser.close');return;
   }
   if(process.argv.includes('--mouse-only')) {
+    await click('autoContinue');
     await evaluate("(()=>{fixture.mousePauses=0;fixture.moves=0;fixture.normalExits=0;const v=document.querySelector('video');for(const type of ['mouseout','mouseleave','pointerout','pointerleave'])v.addEventListener(type,()=>{fixture.mousePauses++;v.pause()});v.addEventListener('mousemove',()=>fixture.moves++);const input=document.createElement('input');input.id='normal-input';input.style.cssText='position:absolute;left:350px;top:300px;width:70px;height:30px';input.addEventListener('mouseout',()=>fixture.normalExits++);document.body.append(input);})()");
     await click('start');await waitFor('!fixture.paused');
     await waitFor("!!window[Symbol.for('xxt-player.mouseLeaveGuard')]");
@@ -473,6 +542,7 @@ async function main() {
     await command('Browser.close');return;
   }
   if(process.argv.includes('--foreground-only')) {
+    await click('autoContinue');
     assert.equal(await evaluate("Object.hasOwn(document,'hidden')"),false);
     await click('foregroundCompat');await click('start');await waitFor("Object.hasOwn(document,'hidden')");
     assert.equal(await evaluate('document.hidden'),false);assert.equal(await evaluate('document.visibilityState'),'visible');assert.equal(await evaluate('document.hasFocus()'),true);
@@ -484,6 +554,7 @@ async function main() {
     await command('Browser.close');return;
   }
   if(process.argv.includes('--continuation-only')) {
+    await click('autoContinue');
     await click('start');await waitFor('!fixture.paused');
     await evaluate("(()=>{const v=document.querySelector('video'),wrap=document.createElement('div');wrap.className='video-js';wrap.style.display='inline-block';v.before(wrap);wrap.append(v);const b=document.createElement('button');b.id='hidden-continue';b.textContent='继续学习';b.style.opacity='0';wrap.append(b)})()");
     assert.equal(await evaluate('XXTQuiz.blocker()'),'','a player wrapper cannot turn its hidden child button into a visible gate');

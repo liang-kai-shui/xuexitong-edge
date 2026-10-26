@@ -100,9 +100,16 @@
     const mediaPending=media.blockers.length>0;
     const task=tasks();
     const pendingTasks=task.detected && !task.completed;
-    const loadingImages=images.some(image=>!image.complete || image.naturalWidth===0);
-    const ready=detected && !mediaPending && !pendingTasks && !loadingImages;
-    return {detected,ready,chars:content.length,images:images.length,pendingTasks,mediaPending,loadingImages,
+    const imageCounts={loaded:0,loading:0,failed:0,deferred:0};
+    for(const image of images) {
+      const kind=image.complete?(image.naturalWidth>0?'loaded':'failed'):image.loading==='lazy'?'deferred':'loading';
+      imageCounts[kind]++;
+    }
+    const loadingImages=imageCounts.loading+imageCounts.failed+imageCounts.deferred>0;
+    // Article illustrations are not task completion evidence or prerequisites.
+    // Quiz images use the separate strict question renderer.
+    const ready=detected && !mediaPending && !pendingTasks;
+    return {detected,ready,chars:content.length,images:images.length,pendingTasks,mediaPending,loadingImages,imageCounts,
       mediaBlockers:media.blockers.slice(0,20),resourceCounts:media.counts,
       signature:globalThis.XXTQuiz?.hash(JSON.stringify([content,images.map(img=>img.currentSrc || img.src),ready])) || ''};
   }
